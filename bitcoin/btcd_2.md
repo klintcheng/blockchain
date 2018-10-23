@@ -22,6 +22,7 @@
         - [1.3.13. 连结配置的固定节点](#1313-连结配置的固定节点)
         - [1.3.14. 启用RPC服务](#1314-启用rpc服务)
     - [1.4. server.start()](#14-serverstart)
+        - [1.4.1. peerHandler](#141-peerhandler)
 
 <!-- /TOC -->
 ## 1.1. 生成配置
@@ -436,14 +437,13 @@ if !cfg.DisableRPC {
 
 ## 1.4. server.start()
 
-启动服务，假设配置有打开
+start会根据配置启用几个独立的模块。
 
-- 启用peer处理器
-- upap更新
-    - see [Universal Plug and Play](https://en.wikipedia.org/wiki/Universal_Plug_and_Play)
-- 启动广播处理器，rebroadcastHandler
-- 启动rpcServer
-- 启用cpuMiner
+- go s.peerHandler()
+- go s.upnpUpdateThread()
+- go s.rebroadcastHandler()
+- s.rpcServer.Start()
+- s.cpuMiner.Start()
 
 **code:**
 ```
@@ -485,3 +485,121 @@ func (s *server) Start() {
     }
 }
 ```
+
+### 1.4.1. peerHandler
+
+peerHandler启动了节点相关的三个管理服务。
+
+- s.addrManager.Start()
+- s.syncManager.Start()
+- go s.connManager.Start()
+
+同时，它会一直循环去读取管道中的节点消息。调用相关的处理器处理。
+直到收到退出命令，断开所有节点的连结。最后，调用s.wg.Done()终止等待。
+
+**code:**
+```
+// peerHandler is used to handle peer operations such as adding and removing
+// peers to and from the server, banning peers, and broadcasting messages to
+// peers.  It must be run in a goroutine.
+
+func (s *server) peerHandler() {
+    // Start the address manager and sync manager, both of which are needed
+    // by peers.  This is done here since their lifecycle is closely tied
+    // to this handler and rather than adding more channels to sychronize
+    // things, it's easier and slightly faster to simply start and stop them
+    // in this handler.
+    s.addrManager.Start()
+    s.syncManager.Start()
+
+    srvrLog.Tracef("Starting peer handler")
+
+    state := &peerState{
+        inboundPeers:    make(map[int32]*serverPeer),
+        persistentPeers: make(map[int32]*serverPeer),
+        outboundPeers:   make(map[int32]*serverPeer),
+        banned:          make(map[string]time.Time),
+        outboundGroups:  make(map[string]int),
+    }
+
+    if !cfg.DisableDNSSeed {
+        // Add peers discovered through DNS to the address manager.
+        connmgr.SeedFromDNS(activeNetParams.Params, defaultRequiredServices,
+            btcdLookup, func(addrs []*wire.NetAddress) {
+                // Bitcoind uses a lookup of the dns seeder here. This
+                // is rather strange since the values looked up by the
+                // DNS seed lookups will vary quite a lot.
+                // to replicate this behaviour we put all addresses as
+                // having come from the first one.
+                s.addrManager.AddAddresses(addrs, addrs[0])
+            })
+    }
+    go s.connManager.Start()
+
+out:
+    for {
+        select {
+        // New peers connected to the server.
+        case p := <-s.newPeers:
+            s.handleAddPeerMsg(state, p)
+
+        // Disconnected peers.
+        case p := <-s.donePeers:
+            s.handleDonePeerMsg(state, p)
+
+        // Block accepted in mainchain or orphan, update peer height.
+        case umsg := <-s.peerHeightsUpdate:
+            s.handleUpdatePeerHeights(state, umsg)
+
+        // Peer to ban.
+        case p := <-s.banPeers:
+            s.handleBanPeerMsg(state, p)
+
+        // New inventory to potentially be relayed to other peers.
+        case invMsg := <-s.relayInv:
+            s.handleRelayInvMsg(state, invMsg)
+
+        // Message to broadcast to all connected peers except those
+        // which are excluded by the message.
+        case bmsg := <-s.broadcast:
+            s.handleBroadcastMsg(state, &bmsg)
+
+        case qmsg := <-s.query:
+            s.handleQuery(state, qmsg)
+
+        case <-s.quit:
+            // Disconnect all peers on server shutdown.
+            state.forAllPeers(func(sp *serverPeer) {
+                srvrLog.Tracef("Shutdown peer %s", sp)
+                sp.Disconnect()
+            })
+            break out
+        }
+    }
+
+    s.connManager.Stop()
+    s.syncManager.Stop()
+    s.addrManager.Stop()
+
+    // Drain channels before exiting so nothing is left waiting around
+    // to send.
+cleanup:
+    for {
+        select {
+        case <-s.newPeers:
+        case <-s.donePeers:
+        case <-s.peerHeightsUpdate:
+        case <-s.relayInv:
+        case <-s.broadcast:
+        case <-s.query:
+        default:
+            break cleanup
+        }
+    }
+    s.wg.Done()
+    srvrLog.Tracef("Peer handler done")
+    }
+```
+
+
+

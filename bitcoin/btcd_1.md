@@ -94,7 +94,7 @@ API server listening at: 127.0.0.1:21450
 ## 1.2. 包结构
 
 ### 1.2.1. /addrmgr
-地址管理，维护可用节点地址信息。
+地址管理，维护可用节点地址信息。
 ```
 In order maintain the peer-to-peer Bitcoin network, there needs to be a source
 of addresses to connect to as nodes come and go.  The Bitcoin protocol provides
@@ -116,7 +116,8 @@ Package blockchain implements bitcoin block handling and chain selection rules.
 ### 1.2.3. /btcec
 非对称加密算法：椭圆曲线加密算法
 ```
-Package btcec implements elliptic curve cryptography needed for working with Bitcoin (secp256k1 only for now). It is designed so that it may be used with the standard crypto/ecdsa packages provided with go. 
+Package btcec implements elliptic curve cryptography needed for working with Bitcoin (secp256k1 only for now). 
+It is designed so that it may be used with the standard crypto/ecdsa packages provided with go. 
 ```
 
 [detail](https://github.com/btcsuite/btcd/tree/master/btcec)
@@ -124,14 +125,16 @@ Package btcec implements elliptic curve cryptography needed for working with Bit
 ### 1.2.4. /btcjson
 
 ```
-Package btcjson implements concrete types for marshalling to and from the bitcoin JSON-RPC API. A comprehensive suite of tests is provided to ensure proper functionality.
+Package btcjson implements concrete types for marshalling to and from the bitcoin JSON-RPC API. 
+A comprehensive suite of tests is provided to ensure proper functionality.
 ```
 
 [detail](https://github.com/btcsuite/btcd/tree/master/btcjson)
 
 ### 1.2.5. /chaincfg
 ```
-Package chaincfg defines chain configuration parameters for the three standard Bitcoin networks and provides the ability for callers to define their own custom Bitcoin networks.
+Package chaincfg defines chain configuration parameters for the three standard Bitcoin networks 
+and provides the ability for callers to define their own custom Bitcoin networks.
 ```
 
 [detail](https://github.com/btcsuite/btcd/tree/master/chaincfg)
@@ -233,8 +236,8 @@ until it is up to date with the longest chain the sync peer is aware of.
 
 ### 1.2.13. /peer
 ```
-This package builds upon the wire package, which provides the fundamental primitives necessary to speak the bitcoin wire protocol, 
-in order to simplify the process of creating fully functional peers. 
+This package builds upon the wire package, which provides the fundamental primitives necessary to speak 
+the bitcoin wire protocol, in order to simplify the process of creating fully functional peers. 
 In essence, it provides a common base for creating concurrent safe fully validating nodes, 
 Simplified Payment Verification (SPV) nodes, proxies, etc.
 ```
@@ -290,7 +293,7 @@ A description of the language can be found at https://en.bitcoin.it/wiki/Script
 
 ### 1.2.16. /wire
 数据交换网络协议
-```
+
 The bitcoin protocol consists of exchanging messages between peers. Each message is preceded by a header which identifies 
 information about it such as which bitcoin network it is a part of, its type, how big it is, and a checksum to verify validity. 
 All encoding and decoding of message headers is handled by this package.
@@ -299,8 +302,6 @@ To accomplish this, there is a generic interface for bitcoin messages named Mess
  written, or passed around through channels, functions, etc. In addition, concrete implementations of most of the currently 
  supported bitcoin messages are provided. For these supported messages, all of the details of marshalling and unmarshalling to 
  and from the wire using bitcoin encoding are handled so the caller doesn't have to concern themselves with the specifics.
-
-```
 
 message.go:
 - ReadMessage
@@ -354,9 +355,11 @@ tcfg, _, err := loadConfig()
 ```
 - Load the block database.
 ```
-loadBlockDB loads (or creates when needed) the block database taking into account the selected database backend
- and returns a handle to it.  It also contains additional logic such warning the user if there are multiple databases
-  which consume space on the file system and ensuring the regression test database is clean when in regression test mode.
+loadBlockDB loads (or creates when needed) the block database taking into account the selected database 
+backend and returns a handle to it.  
+It also contains additional logic such warning the user if there are multiple databases
+which consume space on the file system and ensuring the regression test database is clean 
+when in regression test mode.
 ```
 - Create server and start it.
 ```

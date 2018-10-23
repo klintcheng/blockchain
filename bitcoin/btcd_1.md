@@ -154,25 +154,32 @@ getnewaddress ("account")
 [detail](https://github.com/btcsuite/btcd/tree/master/cmd)
 
 ### 1.2.7. /connmgr
+连接创建器
 ```
 Connection Manager handles all the general connection concerns such as maintaining a set number of outbound connections, sourcing peers, banning, limiting max connections, tor lookup, etc.
 
-The package provides a generic connection manager which is able to accept connection requests from a source or a set of given addresses, dial them and notify the caller on connections. The main intended use is to initialize a pool of active connections and maintain them to remain connected to the P2P network.
+The package provides a generic connection manager which is able to accept connection requests 
+from a source or a set of given addresses, dial them and notify the caller on connections. 
+The main intended use is to initialize a pool of active connections and maintain them 
+to remain connected to the P2P network.
+```
 
 In addition the connection manager provides the following utilities:
 
-    Notifications on connections or disconnections
-    Handle failures and retry new addresses from the source
-    Connect only to specified addresses
-    Permanent connections with increasing backoff retry timers
-    Disconnect or Remove an established connection
-```
+- Notifications on connections or disconnections
+- Handle failures and retry new addresses from the source
+- Connect only to specified addresses
+- Permanent connections with increasing backoff retry timers
+- Disconnect or Remove an established connection
+
 [detail](https://github.com/btcsuite/btcd/tree/master/connmgr)
 
 ### 1.2.8. /database
 数据库包,提供db接口，实现了ffldb。它用leveldb实现metadata保存，用文件保存区块信息。
 ```
-The default backend, ffldb, has a strong focus on speed, efficiency, and robustness. It makes use of leveldb for the metadata, flat files for block storage, and strict checksums in key areas to ensure data integrity.
+The default backend, ffldb, has a strong focus on speed, efficiency, and robustness. 
+It makes use of leveldb for the metadata, flat files for block storage, 
+and strict checksums in key areas to ensure data integrity.
 ```
 **Feature Overview**
 - Key/value metadata store
@@ -196,7 +203,9 @@ The default backend, ffldb, has a strong focus on speed, efficiency, and robustn
 ```
 Package mempool provides a policy-enforced pool of unmined bitcoin transactions.
 
-A key responsbility of the bitcoin network is mining user-generated transactions into blocks. In order to facilitate this, the mining process relies on having a readily-available source of transactions to include in a block that is being solved.
+A key responsbility of the bitcoin network is mining user-generated transactions into blocks.
+ In order to facilitate this, the mining process relies on having a readily-available source of 
+ transactions to include in a block that is being solved.
 ```
 **Feature Overview**
 - Maintain a pool of fully validated transactions

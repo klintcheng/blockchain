@@ -2,7 +2,7 @@
 <!-- TOC -->
 
 - [1. 系统启动过程](#1-系统启动过程)
-    - [1.1. 生成配置](#11-生成配置)
+    - [1.1. 生成配置](#11-生成配置)
         - [1.1.1. loadConfig](#111-loadconfig)
     - [1.2. 加载DB](#12-加载db)
         - [1.2.1. loadBlockDB](#121-loadblockdb)
@@ -25,7 +25,7 @@
     - [1.4. server.start()](#14-serverstart)
 
 <!-- /TOC -->
-## 1.1. 生成配置
+## 1.1. 生成配置
 
 ### 1.1.1. loadConfig
 
@@ -192,7 +192,7 @@ s.chain, err = blockchain.New(&blockchain.Config{
 ```
 
 ### 1.3.8. 创建FeeEstimator
-FeeEstimator 用于评估当前交易费用。
+FeeEstimator 用于评估当前交易费用。
 ```
 // Search for a FeeEstimator state in the database. If none can be found
 // or if it cannot be loaded, create a new one.
@@ -232,7 +232,8 @@ https://www.buybitcoinworldwide.com/fee-calculator/
 内存池用于存放未确认的交易，在挖矿时会从这里取。
 
 mempool provides a policy-enforced pool of unmined bitcoin transactions.
-A key responsbility of the bitcoin network is mining user-generated transactions into blocks.  In order to facilitate this, the mining process relies on having a
+A key responsbility of the bitcoin network is mining user-generated transactions into blocks. 
+ In order to facilitate this, the mining process relies on having a
 readily-available source of transactions to include in a block that is being solved.
 
 ```

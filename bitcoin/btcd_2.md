@@ -7,21 +7,20 @@
     - [1.2. 加载DB](#12-加载db)
         - [1.2.1. loadBlockDB](#121-loadblockdb)
     - [1.3. NewServer](#13-newserver)
-        - [1.3.1. 配置当前服务默认支持的协议：](#131-配置当前服务默认支持的协议)
-        - [1.3.2. 创建addressManager](#132-创建addressmanager)
-        - [1.3.3. initListeners](#133-initlisteners)
-        - [1.3.4. 创建一个server](#134-创建一个server)
-        - [1.3.5. 创建blockchain相关的索引](#135-创建blockchain相关的索引)
-        - [1.3.6. mergeCheckpoints](#136-mergecheckpoints)
-        - [1.3.7. 创建blockchain对象](#137-创建blockchain对象)
-        - [1.3.8. 创建FeeEstimator](#138-创建feeestimator)
-        - [1.3.9. 创建内存池](#139-创建内存池)
-        - [1.3.10. 创建syncManager](#1310-创建syncmanager)
-        - [1.3.11. 创建cpu挖矿实例](#1311-创建cpu挖矿实例)
-        - [1.3.12. 创建newAddressFunc](#1312-创建newaddressfunc)
-        - [1.3.13. 创建connmgr](#1313-创建connmgr)
-        - [1.3.14. 连结配置的固定节点](#1314-连结配置的固定节点)
-        - [1.3.15. 启用RPC服务](#1315-启用rpc服务)
+        - [1.3.1. 创建addressManager](#131-创建addressmanager)
+        - [1.3.2. initListeners](#132-initlisteners)
+        - [1.3.3. 创建一个server](#133-创建一个server)
+        - [1.3.4. 创建blockchain相关的索引](#134-创建blockchain相关的索引)
+        - [1.3.5. mergeCheckpoints](#135-mergecheckpoints)
+        - [1.3.6. 创建blockchain对象](#136-创建blockchain对象)
+        - [1.3.7. 创建FeeEstimator](#137-创建feeestimator)
+        - [1.3.8. 创建内存池](#138-创建内存池)
+        - [1.3.9. 创建syncManager](#139-创建syncmanager)
+        - [1.3.10. 创建cpu挖矿实例](#1310-创建cpu挖矿实例)
+        - [1.3.11. 创建newAddressFunc](#1311-创建newaddressfunc)
+        - [1.3.12. 创建connmgr](#1312-创建connmgr)
+        - [1.3.13. 连结配置的固定节点](#1313-连结配置的固定节点)
+        - [1.3.14. 启用RPC服务](#1314-启用rpc服务)
     - [1.4. server.start()](#14-serverstart)
 
 <!-- /TOC -->
@@ -81,14 +80,7 @@ db, err = database.Create(cfg.DbType, dbPath, activeNetParams.Net)
 
 [server.go]()
 
-### 1.3.1. 配置当前服务默认支持的协议：
-
-```golang
-defaultServices = wire.SFNodeNetwork | wire.SFNodeBloom |
-        wire.SFNodeWitness | wire.SFNodeCF
-```
-
-### 1.3.2. 创建addressManager
+### 1.3.1. 创建addressManager
 
 ```
 amgr := addrmgr.New(cfg.DataDir, btcdLookup)
@@ -97,7 +89,7 @@ addrmgr会读取默认的节点，配置文件在peers.json：
 filepath.Join(dataDir, "peers.json")
 ```
 
-### 1.3.3. initListeners
+### 1.3.2. initListeners
 
 启用用监听tcp4和tcp6
 ```
@@ -114,7 +106,7 @@ if cfg.NoCFilters {
     
 listener, err := net.Listen(addr.Network(), addr.String())
 ```
-### 1.3.4. 创建一个server
+### 1.3.3. 创建一个server
 
 ```
 server provides a bitcoin server for handling communications to and from
@@ -142,7 +134,7 @@ s := server{
 }
 ```
 
-### 1.3.5. 创建blockchain相关的索引
+### 1.3.4. 创建blockchain相关的索引
 
 索引相关的包在btcd/blockchain/indexers/中。索引数据是通过ffldb保存到leveldb中。索引的创建都与配置有关，默认是不启用索引。
 
@@ -174,9 +166,9 @@ indexes为前面创建的全部索引的集合
 
 indexManager = indexers.NewManager(db, indexes)
 ```
-### 1.3.6. mergeCheckpoints
+### 1.3.5. mergeCheckpoints
 
-### 1.3.7. 创建blockchain对象
+### 1.3.6. 创建blockchain对象
 ```
 s.chain, err = blockchain.New(&blockchain.Config{
         DB:           s.db,
@@ -191,7 +183,7 @@ s.chain, err = blockchain.New(&blockchain.Config{
 
 ```
 
-### 1.3.8. 创建FeeEstimator
+### 1.3.7. 创建FeeEstimator
 FeeEstimator 用于评估当前交易费用。
 ```
 // Search for a FeeEstimator state in the database. If none can be found
@@ -227,7 +219,7 @@ if s.feeEstimator == nil || s.feeEstimator.LastKnownHeight() != s.chain.BestSnap
 三方平台：
 https://www.buybitcoinworldwide.com/fee-calculator/
 
-### 1.3.9. 创建内存池
+### 1.3.8. 创建内存池
 
 内存池用于存放未确认的交易，在挖矿时会从这里取。
 
@@ -264,7 +256,7 @@ txC := mempool.Config{
 s.txMemPool = mempool.New(&txC)
 ```
 
-### 1.3.10. 创建syncManager
+### 1.3.9. 创建syncManager
 syncManager用于节点间消息同步，如区块。
 
 SyncManager is used to communicate block related messages with peers. The SyncManager is started as by executing Start() in a goroutine. Once started,it selects peers to sync from and starts the initial block download. Once the
@@ -282,7 +274,7 @@ s.syncManager, err = netsync.New(&netsync.Config{
 })
 ```
 
-### 1.3.11. 创建cpu挖矿实例
+### 1.3.10. 创建cpu挖矿实例
 
 ```
 Create the mining policy and block template generator based on the configuration options.
@@ -309,7 +301,7 @@ s.cpuMiner = cpuminer.New(&cpuminer.Config{
 })
 ```
 
-### 1.3.12. 创建newAddressFunc
+### 1.3.11. 创建newAddressFunc
 newAddressFunc用于得到一个新的节点地址，里面会用到随机算法。
 ```
 Only setup a function to return new addresses to connect to when not running in connect-only mode.  The simulation network is always in connect-only mode since it is only intended to connect to specified peers and actively avoid advertising and connecting to discovered peers in order to prevent it from becoming a public test
@@ -355,7 +347,7 @@ if !cfg.SimNet && len(cfg.ConnectPeers) == 0 {
     }
 }
 ```
-### 1.3.13. 创建connmgr
+### 1.3.12. 创建connmgr
 connmgr 用于创建并维护连结，里面有两个重要的参数OnConnection和OnAccept用于创建peer.
 ```
 // Create a connection manager.
@@ -378,7 +370,7 @@ if err != nil {
 s.connManager = cmgr
 ```
 
-### 1.3.14. 连结配置的固定节点
+### 1.3.13. 连结配置的固定节点
 
 ```
 // Start up persistent peers.
@@ -399,7 +391,7 @@ for _, addr := range permanentPeers {
 }
 ```
 
-### 1.3.15. 启用RPC服务
+### 1.3.14. 启用RPC服务
 
 ```
 if !cfg.DisableRPC {

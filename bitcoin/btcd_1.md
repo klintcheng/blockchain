@@ -25,6 +25,8 @@
         - [1.3.1. btcd.go](#131-btcdgo)
         - [1.3.2. config.go](#132-configgo)
         - [1.3.3. server.go](#133-servergo)
+            - [serverPeer](#serverpeer)
+            - [serverPeer](#serverpeer-1)
 
 <!-- /TOC -->
 ## 1.1. 默认启动过程
@@ -121,6 +123,7 @@ Package btcec implements elliptic curve cryptography needed for working with Bit
 [detail](https://github.com/btcsuite/btcd/tree/master/btcec)
 
 ### 1.2.4. /btcjson
+
 ```
 Package btcjson implements concrete types for marshalling to and from the bitcoin JSON-RPC API. A comprehensive suite of tests is provided to ensure proper functionality.
 ```
@@ -368,5 +371,94 @@ server是最重要的部分。它主要完成如下功能
 - 初始化所有需要的组件
 - 启动相关服务
 - 实现组件的通信功能
+
+主要结构体：server 和serverPeer
+
+#### serverPeer
+```
+// server provides a bitcoin server for handling communications to and from
+// bitcoin peers.
+type server struct {
+    // The following variables must only be used atomically.
+    // Putting the uint64s first makes them 64-bit aligned for 32-bit systems.
+    bytesReceived uint64 // Total bytes received from all peers since start.
+    bytesSent     uint64 // Total bytes sent by all peers since start.
+    started       int32
+    shutdown      int32
+    shutdownSched int32
+    startupTime   int64
+
+    chainParams          *chaincfg.Params
+    addrManager          *addrmgr.AddrManager
+    connManager          *connmgr.ConnManager
+    sigCache             *txscript.SigCache
+    hashCache            *txscript.HashCache
+    rpcServer            *rpcServer
+    syncManager          *netsync.SyncManager
+    chain                *blockchain.BlockChain
+    txMemPool            *mempool.TxPool
+    cpuMiner             *cpuminer.CPUMiner
+    modifyRebroadcastInv chan interface{}
+    newPeers             chan *serverPeer
+    donePeers            chan *serverPeer
+    banPeers             chan *serverPeer
+    query                chan interface{}
+    relayInv             chan relayMsg
+    broadcast            chan broadcastMsg
+    peerHeightsUpdate    chan updatePeerHeightsMsg
+    wg                   sync.WaitGroup
+    quit                 chan struct{}
+    nat                  NAT
+    db                   database.DB
+    timeSource           blockchain.MedianTimeSource
+    services             wire.ServiceFlag
+
+    // The following fields are used for optional indexes.  They will be nil
+    // if the associated index is not enabled.  These fields are set during
+    // initial creation of the server and never changed afterwards, so they
+    // do not need to be protected for concurrent access.
+    txIndex   *indexers.TxIndex
+    addrIndex *indexers.AddrIndex
+    cfIndex   *indexers.CfIndex
+
+    // The fee estimator keeps track of how long transactions are left in
+    // the mempool before they are mined into blocks.
+    feeEstimator *mempool.FeeEstimator
+
+    // cfCheckptCaches stores a cached slice of filter headers for cfcheckpt
+    // messages for each filter type.
+    cfCheckptCaches    map[wire.FilterType][]cfHeaderKV
+    cfCheckptCachesMtx sync.RWMutex
+}
+```
+
+#### serverPeer
+
+```
+// serverPeer extends the peer to maintain state shared by the server and
+// the blockmanager.
+type serverPeer struct {
+    // The following variables must only be used atomically
+    feeFilter int64
+
+    *peer.Peer
+
+    connReq        *connmgr.ConnReq
+    server         *server
+    persistent     bool
+    continueHash   *chainhash.Hash
+    relayMtx       sync.Mutex
+    disableRelayTx bool
+    sentAddrs      bool
+    isWhitelisted  bool
+    filter         *bloom.Filter
+    knownAddresses map[string]struct{}
+    banScore       connmgr.DynamicBanScore
+    quit           chan struct{}
+    // The following chans are used to sync blockmanager and server.
+    txProcessed    chan struct{}
+    blockProcessed chan struct{}
+}
+```
 
 详见第二章

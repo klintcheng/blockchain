@@ -25,8 +25,8 @@
         - [1.3.1. btcd.go](#131-btcdgo)
         - [1.3.2. config.go](#132-configgo)
         - [1.3.3. server.go](#133-servergo)
+            - [server](#server)
             - [serverPeer](#serverpeer)
-            - [serverPeer](#serverpeer-1)
 
 <!-- /TOC -->
 ## 1.1. 默认启动过程
@@ -407,7 +407,7 @@ server是最重要的部分。它主要完成如下功能
 
 主要结构体：server 和serverPeer
 
-#### serverPeer
+#### server
 ```
 // server provides a bitcoin server for handling communications to and from
 // bitcoin peers.

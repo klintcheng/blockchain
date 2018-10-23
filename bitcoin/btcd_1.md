@@ -272,15 +272,101 @@ The bitcoin protocol consists of exchanging messages between peers. Each message
 
 To accomplish this, there is a generic interface for bitcoin messages named Message which allows messages of any type to be read, written, or passed around through channels, functions, etc. In addition, concrete implementations of most of the currently supported bitcoin messages are provided. For these supported messages, all of the details of marshalling and unmarshalling to and from the wire using bitcoin encoding are handled so the caller doesn't have to concern themselves with the specifics.
 ```
+
+message.go:
+- ReadMessage
+- WriteMessage
+
 [detail](https://github.com/btcsuite/btcd/tree/master/wire)
 
+**BlockHeader**
+```
+// BlockHeader defines information about a block and is used in the bitcoin
+// block (MsgBlock) and headers (MsgHeaders) messages.
+type BlockHeader struct {
+    // Version of the block.  This is not the same as the protocol version.
+    Version int32
+
+    // Hash of the previous block header in the block chain.
+    PrevBlock chainhash.Hash
+
+    // Merkle tree reference to hash of all transactions for the block.
+    MerkleRoot chainhash.Hash
+
+    // Time the block was created.  This is, unfortunately, encoded as a
+    // uint32 on the wire and therefore is limited to 2106.
+    Timestamp time.Time
+
+    // Difficulty target for the block.
+    Bits uint32
+
+    // Nonce used to generate the block.
+    Nonce uint32
+}
+```
 ## 1.3. 主服务
 
 ### 1.3.1. btcd.go 
-main入口
+main入口，处理流程
+
+- runtime.GOMAXPROCS(runtime.NumCPU())
+- Up some limits.
+```
+if err := limits.SetLimits(); err != nil {
+    fmt.Fprintf(os.Stderr, "failed to set limits: %v\n", err)
+    os.Exit(1)
+}
+```
+- Load configuration and parse command line.  
+```
+This function also initializes logging and configures it accordingly.
+
+tcfg, _, err := loadConfig()
+```
+- Load the block database.
+```
+loadBlockDB loads (or creates when needed) the block database taking into account the selected database backend and returns a handle to it.  It also contains additional logic such warning the user if there are multiple databases which consume space on the file system and ensuring the regression test database is clean when in regression test mode.
+```
+- Create server and start it.
+```
+// Create server and start it.
+server, err := newServer(cfg.Listeners, db, activeNetParams.Params,
+    interrupt)
+if err != nil {
+    // TODO: this logging could do with some beautifying.
+    btcdLog.Errorf("Unable to start server on %v: %v",
+        cfg.Listeners, err)
+    return err
+}
+defer func() {
+    btcdLog.Infof("Gracefully shutting down the server...")
+    server.Stop()
+    server.WaitForShutdown()
+    srvrLog.Infof("Server shutdown complete")
+}()
+server.Start()
+```
 
 ### 1.3.2. config.go 
 配置管理
 
+```
+
+loadConfig initializes and parses the config using a config file and command line options.
+The configuration proceeds as follows:
+1) Start with a default config with sane settings
+2) Pre-parse the command line to check for an alternative config file
+3) Load configuration file overwriting defaults with any specified options
+4) Parse CLI options and overwrite/add any specified options
+
+The above results in btcd functioning properly without any config settings while still allowing the user to override settings with config files and command line options.  Command line options always take precedence.
+```
+
 ### 1.3.3. server.go 
-主服务
+server是最重要的部分。它主要完成如下功能
+
+- 初始化所有需要的组件
+- 启动相关服务
+- 实现组件的通信功能
+
+详见第二章

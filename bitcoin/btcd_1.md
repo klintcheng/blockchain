@@ -213,13 +213,20 @@ cpu挖矿实现
 
 ### 1.2.12. /netsync
 ```
-This package implements a concurrency safe block syncing protocol. The SyncManager communicates with connected peers to perform an initial block download, keep the chain and unconfirmed transaction pool in sync, and announce new blocks connected to the chain. Currently the sync manager selects a single sync peer that it downloads all blocks from until it is up to date with the longest chain the sync peer is aware of.
+This package implements a concurrency safe block syncing protocol. 
+The SyncManager communicates with connected peers to perform an initial block download, 
+keep the chain and unconfirmed transaction pool in sync, and announce new blocks connected to the chain. 
+Currently the sync manager selects a single sync peer that it downloads all blocks from 
+until it is up to date with the longest chain the sync peer is aware of.
 ```
 [detail](https://github.com/btcsuite/btcd/tree/master/netsync)
 
 ### 1.2.13. /peer
 ```
-This package builds upon the wire package, which provides the fundamental primitives necessary to speak the bitcoin wire protocol, in order to simplify the process of creating fully functional peers. In essence, it provides a common base for creating concurrent safe fully validating nodes, Simplified Payment Verification (SPV) nodes, proxies, etc.
+This package builds upon the wire package, which provides the fundamental primitives necessary to speak the bitcoin wire protocol, 
+in order to simplify the process of creating fully functional peers. 
+In essence, it provides a common base for creating concurrent safe fully validating nodes, 
+Simplified Payment Verification (SPV) nodes, proxies, etc.
 ```
 **Feature Overview**
 
@@ -254,7 +261,9 @@ This package builds upon the wire package, which provides the fundamental primit
 ### 1.2.14. /rpcclient
 封装的RPC调用客户端
 ```
-rpcclient implements a Websocket-enabled Bitcoin JSON-RPC client package written in Go. It provides a robust and easy to use client for interfacing with a Bitcoin RPC server that uses a btcd/bitcoin core compatible Bitcoin JSON-RPC API.
+rpcclient implements a Websocket-enabled Bitcoin JSON-RPC client package written in Go. 
+It provides a robust and easy to use client for interfacing with a Bitcoin RPC server 
+that uses a btcd/bitcoin core compatible Bitcoin JSON-RPC API.
 ```
 
 [detail](https://github.com/btcsuite/btcd/tree/master/rpcclient)
@@ -262,7 +271,9 @@ rpcclient implements a Websocket-enabled Bitcoin JSON-RPC client package written
 ### 1.2.15. /txscript
 提供交易中使用的基于堆的语言实现,非图灵完备。
 ```
-Bitcoin provides a stack-based, FORTH-like language for the scripts in the bitcoin transactions. This language is not turing complete although it is still fairly powerful. A description of the language can be found at https://en.bitcoin.it/wiki/Script
+Bitcoin provides a stack-based, FORTH-like language for the scripts in the bitcoin transactions. 
+This language is not turing complete although it is still fairly powerful. 
+A description of the language can be found at https://en.bitcoin.it/wiki/Script
 ```
 
 [detail](https://github.com/btcsuite/btcd/tree/master/txscript)
@@ -270,9 +281,15 @@ Bitcoin provides a stack-based, FORTH-like language for the scripts in the bitco
 ### 1.2.16. /wire
 数据交换网络协议
 ```
-The bitcoin protocol consists of exchanging messages between peers. Each message is preceded by a header which identifies information about it such as which bitcoin network it is a part of, its type, how big it is, and a checksum to verify validity. All encoding and decoding of message headers is handled by this package.
+The bitcoin protocol consists of exchanging messages between peers. Each message is preceded by a header which identifies 
+information about it such as which bitcoin network it is a part of, its type, how big it is, and a checksum to verify validity. 
+All encoding and decoding of message headers is handled by this package.
 
-To accomplish this, there is a generic interface for bitcoin messages named Message which allows messages of any type to be read, written, or passed around through channels, functions, etc. In addition, concrete implementations of most of the currently supported bitcoin messages are provided. For these supported messages, all of the details of marshalling and unmarshalling to and from the wire using bitcoin encoding are handled so the caller doesn't have to concern themselves with the specifics.
+To accomplish this, there is a generic interface for bitcoin messages named Message which allows messages of any type to be read,
+ written, or passed around through channels, functions, etc. In addition, concrete implementations of most of the currently 
+ supported bitcoin messages are provided. For these supported messages, all of the details of marshalling and unmarshalling to 
+ and from the wire using bitcoin encoding are handled so the caller doesn't have to concern themselves with the specifics.
+
 ```
 
 message.go:
@@ -327,7 +344,9 @@ tcfg, _, err := loadConfig()
 ```
 - Load the block database.
 ```
-loadBlockDB loads (or creates when needed) the block database taking into account the selected database backend and returns a handle to it.  It also contains additional logic such warning the user if there are multiple databases which consume space on the file system and ensuring the regression test database is clean when in regression test mode.
+loadBlockDB loads (or creates when needed) the block database taking into account the selected database backend
+ and returns a handle to it.  It also contains additional logic such warning the user if there are multiple databases
+  which consume space on the file system and ensuring the regression test database is clean when in regression test mode.
 ```
 - Create server and start it.
 ```
@@ -361,7 +380,9 @@ The configuration proceeds as follows:
 3) Load configuration file overwriting defaults with any specified options
 4) Parse CLI options and overwrite/add any specified options
 
-The above results in btcd functioning properly without any config settings while still allowing the user to override settings with config files and command line options.  Command line options always take precedence.
+The above results in btcd functioning properly without any config settings 
+while still allowing the user to override settings with config files and command line options.  
+Command line options always take precedence.
 ```
 
 ### 1.3.3. server.go 

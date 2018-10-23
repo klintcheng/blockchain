@@ -94,7 +94,7 @@ API server listening at: 127.0.0.1:21450
 ## 1.2. 包结构
 
 ### 1.2.1. /addrmgr
-地址管理，维护可用的节点地址信息。
+地址管理，维护可用节点地址信息。
 ```
 In order maintain the peer-to-peer Bitcoin network, there needs to be a source
 of addresses to connect to as nodes come and go.  The Bitcoin protocol provides
@@ -108,14 +108,13 @@ control with malicious intent.
 
 ### 1.2.2. /blockchain
 
-实现区块处理及chain选择规则
+实现区块处理及chain选择规则
 ```
 Package blockchain implements bitcoin block handling and chain selection rules.
 ```
 [detail](https://github.com/btcsuite/btcd/tree/master/blockchain)
 ### 1.2.3. /btcec
-非对称加密算法：椭圆曲线加密算法
-[mastering bitcoin]书中有详细介绍
+非对称加密算法：椭圆曲线加密算法
 ```
 Package btcec implements elliptic curve cryptography needed for working with Bitcoin (secp256k1 only for now). It is designed so that it may be used with the standard crypto/ecdsa packages provided with go. 
 ```
@@ -138,7 +137,7 @@ Package chaincfg defines chain configuration parameters for the three standard B
 [detail](https://github.com/btcsuite/btcd/tree/master/chaincfg)
 
 ### 1.2.6. /cmd
-命令包，主要实现了btcctl，通过命令调用节点接口。
+命令包，主要实现了btcctl，通过命令调用节点接口。
 ```
 Usage:
   btcctl [OPTIONS] <command> <args...>
@@ -253,7 +252,7 @@ This package builds upon the wire package, which provides the fundamental primit
 [detail](https://github.com/btcsuite/btcd/tree/master/peer)
 
 ### 1.2.14. /rpcclient
-封装的RPC调用客户端
+封装的RPC调用客户端
 ```
 rpcclient implements a Websocket-enabled Bitcoin JSON-RPC client package written in Go. It provides a robust and easy to use client for interfacing with a Bitcoin RPC server that uses a btcd/bitcoin core compatible Bitcoin JSON-RPC API.
 ```
@@ -261,7 +260,7 @@ rpcclient implements a Websocket-enabled Bitcoin JSON-RPC client package written
 [detail](https://github.com/btcsuite/btcd/tree/master/rpcclient)
 
 ### 1.2.15. /txscript
-提供交易中使用的基于堆的语言实现,非图灵完备。
+提供交易中使用的基于堆的语言实现,非图灵完备。
 ```
 Bitcoin provides a stack-based, FORTH-like language for the scripts in the bitcoin transactions. This language is not turing complete although it is still fairly powerful. A description of the language can be found at https://en.bitcoin.it/wiki/Script
 ```
@@ -269,7 +268,7 @@ Bitcoin provides a stack-based, FORTH-like language for the scripts in the bitco
 [detail](https://github.com/btcsuite/btcd/tree/master/txscript)
 
 ### 1.2.16. /wire
-数据交换网络协议
+数据交换网络协议
 ```
 The bitcoin protocol consists of exchanging messages between peers. Each message is preceded by a header which identifies information about it such as which bitcoin network it is a part of, its type, how big it is, and a checksum to verify validity. All encoding and decoding of message headers is handled by this package.
 
@@ -366,9 +365,9 @@ The above results in btcd functioning properly without any config settings while
 ```
 
 ### 1.3.3. server.go 
-server是最重要的部分。它主要完成如下功能
+server是最重要的部分。它主要完成如下功能
 
-- 初始化所有需要的组件
+- 初始化所有需要的组件
 - 启动相关服务
 - 实现组件的通信功能
 
@@ -433,6 +432,8 @@ type server struct {
 ```
 
 #### serverPeer
+
+实现节点通信相关的接口
 
 ```
 // serverPeer extends the peer to maintain state shared by the server and

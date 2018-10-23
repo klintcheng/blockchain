@@ -2,7 +2,7 @@
 <!-- TOC -->
 
 - [1. 系统启动过程](#1-系统启动过程)
-    - [1.1. 生成配置](#11-生成配置)
+    - [1.1. 生成配置](#11-生成配置)
         - [1.1.1. loadConfig](#111-loadconfig)
     - [1.2. 加载DB](#12-加载db)
         - [1.2.1. loadBlockDB](#121-loadblockdb)
@@ -451,6 +451,8 @@ if !cfg.DisableRPC {
 - 启动广播处理器，rebroadcastHandler
 - 启动rpcServer
 - 启用cpuMiner
+
+**code:**
 ```
 // Start begins accepting connections from peers.
 func (s *server) Start() {

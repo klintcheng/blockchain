@@ -21,7 +21,7 @@
         - [1.2.14. /rpcclient](#1214-rpcclient)
         - [1.2.15. /txscript](#1215-txscript)
         - [1.2.16. /wire](#1216-wire)
-    - [1.3. 主服务](#13-主服务)
+    - [1.3. 主要代码](#13-主要代码)
         - [1.3.1. btcd.go](#131-btcdgo)
         - [1.3.2. config.go](#132-configgo)
         - [1.3.3. server.go](#133-servergo)
@@ -304,7 +304,7 @@ type BlockHeader struct {
     Nonce uint32
 }
 ```
-## 1.3. 主服务
+## 1.3. 主要代码
 
 ### 1.3.1. btcd.go 
 main入口，处理流程

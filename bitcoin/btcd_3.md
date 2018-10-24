@@ -11,7 +11,7 @@
     - [1.2. 获取随机地址方法](#12-获取随机地址方法)
         - [1.2.1. GetAddress](#121-getaddress)
     - [1.3. 从连接的节点获取](#13-从连接的节点获取)
-        - [1.3.1. 获取节点地址](#131-获取节点地址)
+        - [1.3.1. 获取节点地址](#131-获取节点地址)
         - [1.3.2. 把地址给其它节点](#132-把地址给其它节点)
 
 <!-- /TOC -->
@@ -20,7 +20,7 @@
 
 一个节点在启动时，必须连结到一些可用的节点上，才能共同区块数。保持全网络数据一致性。
 
-在第二章中，我们有看到创建地址管理服务时，其中一个参数就是peers.json。但是，第一次启动节点时，节点是没有任何可用的临近节点的，那这个节点是如何连结到主网的呢。下面就从代码中找找逻辑：
+在第二章中，我们有看到创建地址管理服务时，其中一个参数就是peers.json。但是，第一次启动节点时，节点是没有任何可用的临近节点的，那这个节点是如何连结到主网的呢。下面就从代码中找找逻辑：
 
 首先，还是回到peerhandler中，看看addrmgr.start()做了什么事。
 
@@ -46,7 +46,7 @@ func (a *AddrManager) Start() {
 
 ### 1.1.1. 本地读取地址信息
 
-Start加载地址信息的代码：a.loadPeers()。它是从文件中加载记录的节点地址信息。
+Start加载地址信息的代码：a.loadPeers()。它是从文件中加载记录的节点地址信息。
 ```
 // loadPeers loads the known address from the saved file.  If empty, missing, or
 // malformed file, just don't load anything and start fresh
@@ -69,7 +69,7 @@ func (a *AddrManager) loadPeers() {
     log.Infof("Loaded %d addresses from file '%s'", a.numAddresses(), a.peersFile)
 }
 ```
-读取文件会用到锁。然后调用a.deserializePeers(a.peersFile)读取文件，文件内容是json格式，因此，会反序列化为对象serializedAddrManager。我们来看下相关内容：
+读取文件会用到锁。然后调用a.deserializePeers(a.peersFile)读取文件，文件内容是json格式，因此，会反序列化为对象serializedAddrManager。我们来看下相关内容：
 
 **peers.json内容格式**
 ```
@@ -229,7 +229,7 @@ NetAddressKey返回的格式为：
 
 ### 1.1.2. 同步到本地文件
 
-同时，启动一个goroutine去定时处理地址。
+同时，启动一个goroutine去定时处理地址。
 
 ```
 // addressHandler is the main handler for the address manager.  It must be run
@@ -255,11 +255,11 @@ out:
 这里，代码比较简单。间隔10分钟保存一次内存中的节点数据到配置文件peers.json中:
 a.savePeers()与a.loadPeers()是一个相反的过程。
 
-**到目前为止，peers.json是没有内容的，因此 ，我们还要找到读取种子的代码。
+到目前为止，peers.json是没有内容的，因此 ，我们还要找到读取种子的代码。
 
 ### 1.1.3. 从种子源获取地址
 
-回到server.start()中，在s.addrManager.Start()启动之后看到了相关代码。**
+回到server.start()中，在s.addrManager.Start()启动之后看到了相关代码。**
 
 ```
 if !cfg.DisableDNSSeed {
@@ -276,7 +276,7 @@ if !cfg.DisableDNSSeed {
 }
 
 ```
-第一个参数就是在chaincfg包中硬编码的。第二个参数是常量。
+第一个参数就是在chaincfg包中硬编码的。第二个参数是常量。
 ```
 // MainNetParams defines the network parameters for the main Bitcoin network.
 var MainNetParams = Params{
@@ -294,7 +294,7 @@ var MainNetParams = Params{
     ...
 }
 ```
-第三个参数是个方法。这个方法就是解析dns.传入dns,返回一组ip。
+第三个参数是个方法。这个方法就是解析dns.传入dns,返回一组ip。
 ```
 // btcdLookup resolves the IP of the given host using the correct DNS lookup
 // function depending on the configuration options.  For example, addresses will
@@ -360,9 +360,9 @@ func SeedFromDNS(chainParams *chaincfg.Params, reqServices wire.ServiceFlag,
     }
 }
 ```
-由于解析nds是一次网络io操作，因此这里会都放到一个goroutine里处理。这也是为什么最后一个参数是个回调函数的原因了。
+由于解析nds是一次网络io操作，因此这里会都放到一个goroutine里处理。这也是为什么最后一个参数是个回调函数的原因了。
 
-seedpeers, err := lookupFn(host) 会返回一组节点ip。最后包装成wire.NetAddress对象。添加到地址管理器中，我们来看下这个方法内部：
+seedpeers, err := lookupFn(host) 会返回一组节点ip。最后包装成wire.NetAddress对象。添加到地址管理器中，我们来看下这个方法内部：
 
 **s.addrManager.AddAddresses(addrs, addrs[0])**
 
@@ -379,7 +379,7 @@ func (a *AddrManager) AddAddresses(addrs []*wire.NetAddress, srcAddr *wire.NetAd
     }
 }
 ```
-可以看到每个dns解析出的ip列表中，第一个就是源，此时，我们就知道为什么前面的KnownAddress中为什么会有两个地址了，一个na,一个srcAddr, 至于有什么用，先不管。
+可以看到每个dns解析出的ip列表中，第一个就是源，此时，我们就知道为什么前面的KnownAddress中为什么会有两个地址了，一个na,一个srcAddr, 至于有什么用，先不管。
 
 这里调用updateAddress。如果地址已经存在就会更新，否则就添加一条。
 
@@ -429,19 +429,19 @@ func (a *AddrManager) updateAddress(netAddr, srcAddr *wire.NetAddress) {
         a.nTried+a.nNew)
 }
 ```
-这里看到有调用getNewBucket，得到一个bucket号，原理类似于hashmap。
+这里看到有调用getNewBucket，得到一个bucket号，原理类似于hashmap。
 
 **getNewBucket算法：**
 ```
 doublesha256(key + sourcegroup + int64(doublesha256(key + group + sourcegroup))%bucket_per_source_group) % num_new_buckets
 ```
-系统设置一个bucket有64个地址。总共有1024个bucket。到这里我们就搞明白了前面**peers.json中NewBuckets为什么会有空的数组子元素了**
+系统设置一个bucket有64个地址。总共有1024个bucket。到这里我们就搞明白了前面**peers.json中NewBuckets为什么会有空的数组子元素了**
 
 由于存储空间是不可变的，因此添加一个地址之后会去检查，如果操过size,就把旧的删除。
 
 **看下这个方法的说明：**
 
-先删除坏的地址，如果没有，就选择一个最旧的地址删除。会用到na.TTimestamp比较
+先删除坏的地址，如果没有，就选择一个最旧的地址删除。会用到na.TTimestamp比较
 ```
 // expireNew makes space in the new buckets by expiring the really bad entries.
 // If no bad entries are available we look at a few and remove the oldest.
@@ -473,7 +473,7 @@ func (a *AddrManager) expireNew(bucket int) {
 }
 ```
 
-坏地址的判断：
+坏地址的判断：
 
 - It claims to be from the future
 - It hasn't been seen in over a month
@@ -531,7 +531,7 @@ func (ka *KnownAddress) isBad() bool {
     return false
 }
 ```
-至此，地址管理服务相关地址维护功能基本看过。但是上面的逻辑，是从第一次没有节点情况，从dns得到的节点。当此节点连接到其它节点之后，会发一个获取地址的消息，让其它节点给一份它自己的地址信息。
+至此，地址管理服务相关地址维护功能基本看过。但是上面的逻辑，是从第一次没有节点情况，从dns得到的节点。当此节点连接到其它节点之后，会发一个获取地址的消息，让其它节点给一份它自己的地址信息。
 
 ## 1.2. 获取随机地址方法
 
@@ -619,8 +619,9 @@ GetAddress 返回一个**随机**的地址给上层。
 - 在bucket中随机选择一个项
 - 随机因子加机会权重
   
-主要看下因子逻辑。
-factor随着失败的次数变大而变大，因此成功的概率也在变大。进入ka.chance()看下。地址的权重是如何处理的：
+**主要看下因子逻辑:**
+
+factor随着失败的次数变大而变大，因此成功的概率也在变大。进入ka.chance()看下。地址的权重是如何处理的：
 
 ```
 // chance returns the selection probability for a known address.  The priority
@@ -649,12 +650,12 @@ func (ka *KnownAddress) chance() float64 {
     return c
 }
 ```
-可以看出，最近10分钟内使用过的，权重会变很小。失败的次数越多，权重也是越小。
+可以看出，最近10分钟内使用过的，权重会变很小。失败的次数越多，权重也是越小。
 
 
 ## 1.3. 从连接的节点获取
 
-### 1.3.1. 获取节点地址
+### 1.3.1. 获取节点地址
 
 我们先不管消息的发送，只看收到其它节点发送回来的地址的代码。节点之前沟通的消息处理都是在server.go中。因此，我们在这个文件中找到了OnAddr。来看看
 

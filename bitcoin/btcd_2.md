@@ -98,14 +98,16 @@ const defaultServices = wire.SFNodeNetwork | wire.SFNodeBloom |
         wire.SFNodeWitness | wire.SFNodeCF
 
 services := defaultServices
-if cfg.NoPeerBloomFilters {
-    services &^= wire.SFNodeBloom
+if !cfg.DisableListen {
+    var err error
+    listeners, nat, err = initListeners(amgr, listenAddrs, services)
+    if err != nil {
+        return nil, err
+    }
+    if len(listeners) == 0 {
+        return nil, errors.New("no valid listen address")
+    }
 }
-if cfg.NoCFilters {
-    services &^= wire.SFNodeCF
-}
-    
-listener, err := net.Listen(addr.Network(), addr.String())
 ```
 ### 1.3.3. 创建一个server
 
@@ -305,41 +307,17 @@ s.cpuMiner = cpuminer.New(&cpuminer.Config{
 ### 1.3.11. 创建newAddressFunc
 newAddressFunc用于得到一个新的节点地址，里面会用到随机算法。
 ```
-Only setup a function to return new addresses to connect to when not running in connect-only mode.  The simulation network is always in connect-only mode since it is only intended to connect to specified peers and actively avoid advertising and connecting to discovered peers in order to prevent it from becoming a public test
-network.
+Only setup a function to return new addresses to connect to when not running in connect-only mode.  
+The simulation network is always in connect-only mode since it is only intended to connect to specified peers 
+and actively avoid advertising and connecting to discovered peers in order to prevent it 
+from becoming a public test network.
 
 var newAddressFunc func() (net.Addr, error)
 if !cfg.SimNet && len(cfg.ConnectPeers) == 0 {
     newAddressFunc = func() (net.Addr, error) {
         for tries := 0; tries < 100; tries++ {
             addr := s.addrManager.GetAddress()
-            if addr == nil {
-                break
-            }
-
-            // Address will not be invalid, local or unroutable
-            // because addrmanager rejects those on addition.
-            // Just check that we don't already have an address
-            // in the same group so that we are not connecting
-            // to the same network segment at the expense of
-            // others.
-            key := addrmgr.GroupKey(addr.NetAddress())
-            if s.OutboundGroupCount(key) != 0 {
-                continue
-            }
-
-            // only allow recent nodes (10mins) after we failed 30
-            // times
-            if tries < 30 && time.Since(addr.LastAttempt()) < 10*time.Minute {
-                continue
-            }
-
-            // allow nondefault ports after 50 failed tries.
-            if tries < 50 && fmt.Sprintf("%d", addr.NetAddress().Port) !=
-                activeNetParams.DefaultPort {
-                continue
-            }
-
+            ...
             addrString := addrmgr.NetAddressKey(addr.NetAddress())
             return addrStringToNetAddr(addrString)
         }
@@ -349,6 +327,7 @@ if !cfg.SimNet && len(cfg.ConnectPeers) == 0 {
 }
 ```
 ### 1.3.12. 创建connmgr
+
 connmgr 用于创建并维护连结，里面有两个重要的参数OnConnection和OnAccept用于创建peer.
 ```
 // Create a connection manager.

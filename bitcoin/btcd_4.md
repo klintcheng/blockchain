@@ -6,7 +6,12 @@
         - [1.1.1. 启动监听处理](#111-启动监听处理)
             - [1.1.1.1. net.Listen](#1111-netlisten)
             - [1.1.1.2. listener.Accept()](#1112-listeneraccept)
-    - [1.2. 创建第一个连接](#12-创建第一个连接)
+        - [1.1.2. 创建第一个连接](#112-创建第一个连接)
+            - [1.1.2.1. NewConnReq](#1121-newconnreq)
+            - [1.1.2.2. 实现接连Connect](#1122-实现接连connect)
+        - [1.1.3. 连接失败](#113-连接失败)
+            - [1.1.3.1. 失败情况](#1131-失败情况)
+            - [失败处理](#失败处理)
 
 <!-- /TOC -->
 ## 1.1. 启动连接管理
@@ -118,7 +123,7 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 }
 ```
 
-** 这个回调方法就会创建一个ServerPeer：**
+**这个回调方法就会创建一个ServerPeer, 分为如下几步**
 
 - 这里创建了一个新的节点
 - 判断是否在白名单中。
@@ -127,7 +132,7 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 - 等待节点退出通知
 
 
-## 1.2. 创建第一个连接
+### 1.1.2. 创建第一个连接
 
 上面的逻辑是被动建立一个连接。下面我们来看看，得到种子节点之后，是如何主动去连接一个节点的。
 
@@ -141,7 +146,7 @@ for i := atomic.LoadUint64(&cm.connReqCount); i < uint64(cm.cfg.TargetOutbound);
 <!-- TargetOutbound: 默认为8（如果配置文件中MaxPeers没有设置） -->
 ```
 
-我们看下NewConnReq方法：
+#### 1.1.2.1. NewConnReq
 
 ```
 // NewConnReq creates a new connection request and connects to the
@@ -190,13 +195,29 @@ func (cm *ConnManager) NewConnReq() {
     cm.Connect(c)
 }
 ```
+- 创建ConnReq并设置id
+- 创建一个registerPending写到无缓冲的requests通道中
+- 等待处理之后通知，利用done
+- 调用GetNewAddress得到地址（这个方法就是NewServer中创建的newAddressFunc）
+- cm.Connect(c)
+  
+我们看下在connHandler的处理：
 
-要建立连接，必须要得到一个节点地址，因此，这里cm.cfg.GetNewAddress必不可少。这个方法就是NewServer中创建的newAddressFunc。
-然后创建一个registerPending写到无缓冲的requests通道中。
+```
+select {
+case req := <-cm.requests:
+    switch msg := req.(type) {
 
+    case registerPending:
+        connReq := msg.c
+        connReq.updateState(ConnPending)
+        pending[msg.c.id] = connReq
+        close(msg.done)
+     
+```
+这个处理很简单，更新状态，添加到pending中，close(msg.done)之后会唤醒NewConnReq
 
-
-
+newAddressFunc 方法就是调用s.addrManager.GetAddress()
 ```
 newAddressFunc = func() (net.Addr, error) {
     for tries := 0; tries < 100; tries++ {
@@ -233,5 +254,176 @@ newAddressFunc = func() (net.Addr, error) {
     }
 
     return nil, errors.New("no valid connect address")
+}
+```
+
+#### 1.1.2.2. 实现接连Connect
+
+开始拨号连接，cm.cfg.Dial(c.Addr)调用的方法就是net.Dial。连接成功之后，就通知处理器处理(connHandler)。
+
+```
+// Connect assigns an id and dials a connection to the address of the
+// connection request.
+func (cm *ConnManager) Connect(c *ConnReq) {
+    if atomic.LoadInt32(&cm.stop) != 0 {
+        return
+    }
+    if atomic.LoadUint64(&c.id) == 0 {
+        ...
+    }
+
+    log.Debugf("Attempting to connect to %v", c)
+
+    conn, err := cm.cfg.Dial(c.Addr)
+    if err != nil {
+        select {
+        case cm.requests <- handleFailed{c, err}:
+        case <-cm.quit:
+        }
+        return
+    }
+
+    select {
+    case cm.requests <- handleConnected{c, conn}:
+    case <-cm.quit:
+    }
+}
+```
+
+**connHandler**:
+
+```
+
+case handleConnected:
+    connReq := msg.c
+
+    if _, ok := pending[connReq.id]; !ok {
+        if msg.conn != nil {
+            msg.conn.Close()
+        }
+        log.Debugf("Ignoring connection for "+
+            "canceled connreq=%v", connReq)
+        continue
+    }
+
+    connReq.updateState(ConnEstablished)
+    connReq.conn = msg.conn
+    conns[connReq.id] = connReq
+    log.Debugf("Connected to %v", connReq)
+    connReq.retryCount = 0
+    cm.failedAttempts = 0
+
+    delete(pending, connReq.id)
+
+    if cm.cfg.OnConnection != nil {
+        go cm.cfg.OnConnection(connReq, msg.conn)
+    }
+```
+
+上面的处理了完成之后，又会起一个新的goroutine。调用server.outboundPeerConnected.
+```
+cmgr, err := connmgr.New(&connmgr.Config{
+    Listeners:      listeners,
+    OnAccept:       s.inboundPeerConnected,
+    RetryDuration:  connectionRetryInterval,
+    TargetOutbound: uint32(targetOutbound),
+    Dial:           btcdDial,
+    OnConnection:   s.outboundPeerConnected,
+    GetNewAddress:  newAddressFunc,
+})
+```
+
+**建立出去的连接，与inboundPeerConnected方法类似，会新建立一个ServerPeer**
+
+```
+// outboundPeerConnected is invoked by the connection manager when a new
+// outbound connection is established.  It initializes a new outbound server
+// peer instance, associates it with the relevant state such as the connection
+// request instance and the connection itself, and finally notifies the address
+// manager of the attempt.
+func (s *server) outboundPeerConnected(c *connmgr.ConnReq, conn net.Conn) {
+    sp := newServerPeer(s, c.Permanent)
+    p, err := peer.NewOutboundPeer(newPeerConfig(sp), c.Addr.String())
+    if err != nil {
+        srvrLog.Debugf("Cannot create outbound peer %s: %v", c.Addr, err)
+        s.connManager.Disconnect(c.ID())
+    }
+    sp.Peer = p
+    sp.connReq = c
+    sp.isWhitelisted = isWhitelisted(conn.RemoteAddr())
+    sp.AssociateConnection(conn)
+    go s.peerDoneHandler(sp)
+    s.addrManager.Attempt(sp.NA())
+}
+```
+同时，我们看到的地址尝试次数的修改s.addrManager.Attempt(sp.NA())：
+```
+// Attempt increases the given address' attempt counter and updates
+// the last attempt time.
+func (a *AddrManager) Attempt(addr *wire.NetAddress) {
+    a.mtx.Lock()
+    defer a.mtx.Unlock()
+
+    // find address.
+    // Surely address will be in tried by now?
+    ka := a.find(addr)
+    if ka == nil {
+        return
+    }
+    // set last tried time to now
+    ka.attempts++
+    ka.lastattempt = time.Now()
+}
+```
+至此，连进来的节点逻辑和连接出去的节点逻辑大致分析完。我们来看看连接失败情况。
+
+### 1.1.3. 连接失败
+
+两种情况下会失败，会发一个失败请求：
+
+#### 1.1.3.1. 失败情况
+
+- GetNewAddress error
+  
+```
+addr, err := cm.cfg.GetNewAddress()
+if err != nil {
+    select {
+    case cm.requests <- handleFailed{c, err}:
+    case <-cm.quit:
+    }
+    return
+}
+```
+
+- Dial error
+
+```
+conn, err := cm.cfg.Dial(c.Addr)
+if err != nil {
+    select {
+    case cm.requests <- handleFailed{c, err}:
+    case <-cm.quit:
+    }
+    return
+}
+```
+
+#### 失败处理
+
+```
+case handleFailed:
+    connReq := msg.c
+
+    if _, ok := pending[connReq.id]; !ok {
+        log.Debugf("Ignoring connection for "+
+            "canceled conn req: %v", connReq)
+        continue
+    }
+
+    connReq.updateState(ConnFailing)
+    log.Debugf("Failed to connect to %v: %v",
+        connReq, msg.err)
+    cm.handleFailedConn(connReq)
 }
 ```

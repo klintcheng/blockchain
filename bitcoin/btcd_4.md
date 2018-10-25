@@ -11,7 +11,7 @@
             - [1.1.2.2. 实现接连Connect](#1122-实现接连connect)
         - [1.1.3. 连接失败](#113-连接失败)
             - [1.1.3.1. 失败情况](#1131-失败情况)
-            - [失败处理](#失败处理)
+            - [1.1.3.2. 失败处理](#1132-失败处理)
 
 <!-- /TOC -->
 ## 1.1. 启动连接管理
@@ -375,6 +375,25 @@ func (a *AddrManager) Attempt(addr *wire.NetAddress) {
     ka.lastattempt = time.Now()
 }
 ```
+这个方法中，会修改KnownAddress中的 **attempts 和 lastattempt**。
+目前为止，地址相关的几个属性都用到了。还有一个lastsuccess没有出现，这个属性是在Good方法中做的修改，先不管它是在什么情况下调用。
+
+```
+// Good marks the given address as good.  To be called after a successful
+// connection and version exchange.  If the address is unknown to the address
+// manager it will be ignored.
+func (a *AddrManager) Good(addr *wire.NetAddress) {
+    ...
+    // ka.Timestamp is not updated here to avoid leaking information
+    // about currently connected peers.
+    now := time.Now()
+    ka.lastsuccess = now
+    ka.lastattempt = now
+    ka.attempts = 0
+    ...
+}
+```
+
 至此，连进来的节点逻辑和连接出去的节点逻辑大致分析完。我们来看看连接失败情况。
 
 ### 1.1.3. 连接失败
@@ -409,9 +428,11 @@ if err != nil {
 }
 ```
 
-#### 失败处理
+#### 1.1.3.2. 失败处理
 
 ```
+func (cm *ConnManager) connHandler() {
+...
 case handleFailed:
     connReq := msg.c
 
@@ -425,5 +446,65 @@ case handleFailed:
     log.Debugf("Failed to connect to %v: %v",
         connReq, msg.err)
     cm.handleFailedConn(connReq)
+}
+```
+
+```
+// handleFailedConn handles a connection failed due to a disconnect or any
+// other failure. If permanent, it retries the connection after the configured
+// retry duration. Otherwise, if required, it makes a new connection request.
+// After maxFailedConnectionAttempts new connections will be retried after the
+// configured retry duration.
+func (cm *ConnManager) handleFailedConn(c *ConnReq) {
+    if atomic.LoadInt32(&cm.stop) != 0 {
+        return
+    }
+    if c.Permanent {
+        c.retryCount++
+        d := time.Duration(c.retryCount) * cm.cfg.RetryDuration
+        if d > maxRetryDuration {
+            d = maxRetryDuration
+        }
+        log.Debugf("Retrying connection to %v in %v", c, d)
+        time.AfterFunc(d, func() {
+            cm.Connect(c)
+        })
+    } else if cm.cfg.GetNewAddress != nil {
+        cm.failedAttempts++
+        if cm.failedAttempts >= maxFailedAttempts {
+            log.Debugf("Max failed connection attempts reached: [%d] "+
+                "-- retrying connection in: %v", maxFailedAttempts,
+                cm.cfg.RetryDuration)
+            time.AfterFunc(cm.cfg.RetryDuration, func() {
+                cm.NewConnReq()
+            })
+        } else {
+            go cm.NewConnReq()
+        }
+    }
+}
+```
+失败情况下，会有两种处理方式：
+1. 永久连接，在一定时间之后直接重连。
+2. 非永久连接，调用NewConnReq，获取另一个地址去连接。
+
+Permanent默认为false。 在server.NewServer()时，如果有配置固定节点，会当作永久接连。
+
+```
+// Start up persistent peers.
+permanentPeers := cfg.ConnectPeers
+if len(permanentPeers) == 0 {
+    permanentPeers = cfg.AddPeers
+}
+for _, addr := range permanentPeers {
+    netAddr, err := addrStringToNetAddr(addr)
+    if err != nil {
+        return nil, err
+    }
+
+    go s.connManager.Connect(&connmgr.ConnReq{
+        Addr:      netAddr,
+        Permanent: true,
+    })
 }
 ```

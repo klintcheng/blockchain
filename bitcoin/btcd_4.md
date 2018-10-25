@@ -197,7 +197,7 @@ func (cm *ConnManager) NewConnReq() {
 ```
 - 创建ConnReq并设置id
 - 创建一个registerPending写到无缓冲的requests通道中
-- 等待处理之后通知，利用done
+- 等待处理之后的通知(channal done)
 - 调用GetNewAddress得到地址（这个方法就是NewServer中创建的newAddressFunc）
 - cm.Connect(c)
   
@@ -217,7 +217,7 @@ case req := <-cm.requests:
 ```
 这个处理很简单，更新状态，添加到pending中，close(msg.done)之后会唤醒NewConnReq
 
-newAddressFunc 方法就是调用s.addrManager.GetAddress()
+newAddressFunc 方法就是调用 s.addrManager.GetAddress()得到地址。
 ```
 newAddressFunc = func() (net.Addr, error) {
     for tries := 0; tries < 100; tries++ {

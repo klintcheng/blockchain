@@ -25,13 +25,11 @@
         - [1.3.1. btcd.go](#131-btcdgo)
         - [1.3.2. config.go](#132-configgo)
         - [1.3.3. server.go](#133-servergo)
-            - [server](#server)
-            - [serverPeer](#serverpeer)
 
 <!-- /TOC -->
 ## 1.1. 默认启动过程
 
-```
+```log
 <!-- 启动，加载配置 -->
 API server listening at: 127.0.0.1:21450
 2018-10-23 10:56:04.642 [INF] BTCD: Version 0.12.0-beta
@@ -94,8 +92,9 @@ API server listening at: 127.0.0.1:21450
 ## 1.2. 包结构
 
 ### 1.2.1. /addrmgr
-地址管理，维护可用节点地址信息。
-```
+
+> 地址管理，维护可用节点地址信息。
+
 In order maintain the peer-to-peer Bitcoin network, there needs to be a source
 of addresses to connect to as nodes come and go.  The Bitcoin protocol provides
 the getaddr and addr messages to allow peers to communicate known addresses with
@@ -103,45 +102,50 @@ each other.  However, there needs to a mechanism to store those results and
 select peers from them.  It is also important to note that remote peers can't
 be trusted to send valid peers nor attempt to provide you with only peers they
 control with malicious intent.
-```
+
 [detail](https://github.com/btcsuite/btcd/blob/master/addrmgr/doc.go)
 
 ### 1.2.2. /blockchain
 
-实现区块处理及chain选择规则
-```
+> 实现区块处理及chain选择规则
+
 Package blockchain implements bitcoin block handling and chain selection rules.
-```
+
 [detail](https://github.com/btcsuite/btcd/tree/master/blockchain)
+
 ### 1.2.3. /btcec
-非对称加密算法：椭圆曲线加密算法
-```
+
+> 非对称加密算法：椭圆曲线加密算法
+
 Package btcec implements elliptic curve cryptography needed for working with Bitcoin (secp256k1 only for now). 
 It is designed so that it may be used with the standard crypto/ecdsa packages provided with go. 
-```
+
 
 [detail](https://github.com/btcsuite/btcd/tree/master/btcec)
 
 ### 1.2.4. /btcjson
 
-```
+> RPC远程调用协议
+
 Package btcjson implements concrete types for marshalling to and from the bitcoin JSON-RPC API. 
 A comprehensive suite of tests is provided to ensure proper functionality.
-```
 
 [detail](https://github.com/btcsuite/btcd/tree/master/btcjson)
 
 ### 1.2.5. /chaincfg
-```
+
+> blockcahin核心配置
+
 Package chaincfg defines chain configuration parameters for the three standard Bitcoin networks 
 and provides the ability for callers to define their own custom Bitcoin networks.
-```
 
 [detail](https://github.com/btcsuite/btcd/tree/master/chaincfg)
 
 ### 1.2.6. /cmd
-命令包，主要实现了btcctl，通过命令调用节点接口。
-```
+
+> 命令包，主要实现了btcctl，通过命令调用节点接口。
+
+```cmd
 Usage:
   btcctl [OPTIONS] <command> <args...>
 
@@ -154,11 +158,13 @@ getaddressesbyaccount "account"
 getbalance ("account" minconf=1)
 getnewaddress ("account")
 ```
+
 [detail](https://github.com/btcsuite/btcd/tree/master/cmd)
 
 ### 1.2.7. /connmgr
-连接创建器
-```
+
+> 连接管理服务
+
 Connection Manager handles all the general connection concerns such as maintaining 
 a set number of outbound connections, sourcing peers, banning, limiting max connections, tor lookup, etc.
 
@@ -166,133 +172,140 @@ The package provides a generic connection manager which is able to accept connec
 from a source or a set of given addresses, dial them and notify the caller on connections. 
 The main intended use is to initialize a pool of active connections and maintain them 
 to remain connected to the P2P network.
-```
+
 
 In addition the connection manager provides the following utilities:
 
-- Notifications on connections or disconnections
-- Handle failures and retry new addresses from the source
-- Connect only to specified addresses
-- Permanent connections with increasing backoff retry timers
-- Disconnect or Remove an established connection
+1. Notifications on connections or disconnections
+2. Handle failures and retry new addresses from the source
+3. Connect only to specified addresses
+4. Permanent connections with increasing backoff retry timers
+5. Disconnect or Remove an established connection
 
 [detail](https://github.com/btcsuite/btcd/tree/master/connmgr)
 
 ### 1.2.8. /database
-数据库包,提供db接口，实现了ffldb。它用leveldb实现metadata保存，用文件保存区块信息。
-```
+
+>数据库包,提供db接口，实现了ffldb。它用leveldb实现metadata保存，用文件保存区块信息。
+
 The default backend, ffldb, has a strong focus on speed, efficiency, and robustness. 
 It makes use of leveldb for the metadata, flat files for block storage, 
 and strict checksums in key areas to ensure data integrity.
-```
-**Feature Overview**
-- Key/value metadata store
-- Bitcoin block storage
-- Efficient retrieval of block headers and regions (transactions, scripts, etc)
-- Read-only and read-write transactions with both manual and managed modes
-- Nested buckets
-- Iteration support including cursors with seek capability
-- Supports registration of backend databases
-- Comprehensive test coverage
+
+>**Feature Overview**
+1. Key/value metadata store
+2. Bitcoin block storage
+3. Efficient retrieval of block headers and regions (transactions, scripts, etc)
+4. Read-only and read-write transactions with both manual and managed modes
+5. Nested buckets
+6. Iteration support including cursors with seek capability
+7. Supports registration of backend databases
+8. Comprehensive test coverage
 
 [detail](https://github.com/btcsuite/btcd/tree/master/database)
 
 ### 1.2.9. /limits
-实现SetLimits()。在启用main中会调用
+
+>实现SetLimits()。在启用main中会调用
 
 [detail](https://github.com/btcsuite/btcd/tree/master/limits)
 
 ### 1.2.10. /mempool
-交易内存池
-```
+>交易内存池
+
 Package mempool provides a policy-enforced pool of unmined bitcoin transactions.
 
 A key responsbility of the bitcoin network is mining user-generated transactions into blocks.
  In order to facilitate this, the mining process relies on having a readily-available source of 
  transactions to include in a block that is being solved.
-```
-**Feature Overview**
-- Maintain a pool of fully validated transactions
-- Orphan transaction support (transactions that spend from unknown outputs)
-- Configurable transaction acceptance policy
-- Additional metadata tracking for each transaction
-- Manual control of transaction removal
+
+> **Feature Overview**
+
+1. Maintain a pool of fully validated transactions
+2. Orphan transaction support (transactions that spend from unknown outputs)
+3. Configurable transaction acceptance policy
+4. Additional metadata tracking for each transaction
+5. Manual control of transaction removal
 
 [detail](https://github.com/btcsuite/btcd/tree/master/mempool)
 
 ### 1.2.11. /mining
-cpu挖矿实现
+
+>cpu挖矿实现
+
 [detail](https://github.com/btcsuite/btcd/tree/master/mining)
 
 ### 1.2.12. /netsync
-```
+
 This package implements a concurrency safe block syncing protocol. 
 The SyncManager communicates with connected peers to perform an initial block download, 
 keep the chain and unconfirmed transaction pool in sync, and announce new blocks connected to the chain. 
 Currently the sync manager selects a single sync peer that it downloads all blocks from 
 until it is up to date with the longest chain the sync peer is aware of.
-```
+
 [detail](https://github.com/btcsuite/btcd/tree/master/netsync)
 
 ### 1.2.13. /peer
-```
+
 This package builds upon the wire package, which provides the fundamental primitives necessary to speak 
 the bitcoin wire protocol, in order to simplify the process of creating fully functional peers. 
 In essence, it provides a common base for creating concurrent safe fully validating nodes, 
 Simplified Payment Verification (SPV) nodes, proxies, etc.
-```
-**Feature Overview**
 
- - Provides a basic concurrent safe bitcoin peer for handling bitcoin
-   communications via the peer-to-peer protocol
- - Full duplex reading and writing of bitcoin protocol messages
- - Automatic handling of the initial handshake process including protocol version negotiation
- - Asynchronous message queueing of outbound messages with optional channel for notification when the message is actually sent
- - Flexible peer configuration
+>**Feature Overview**
+
+1. Provides a basic concurrent safe bitcoin peer for handling bitcoin communications via the peer-to-peer protocol
+2. Full duplex reading and writing of bitcoin protocol messages
+3. Automatic handling of the initial handshake process including protocol version negotiation
+4. Asynchronous message queueing of outbound messages with optional channel for notification when the message is actually sent
+5. Flexible peer configuration
    - Caller is responsible for creating outgoing connections and listening for incoming connections so they have flexibility to establish connections as they see fit (proxies, etc)
    - User agent name and version
    - Bitcoin network
    - Service support signalling (full nodes, bloom filters, etc)
    - Maximum supported protocol version
    - Ability to register callbacks for handling bitcoin protocol messages
- - Inventory message batching and send trickling with known inventory detection
+6. Inventory message batching and send trickling with known inventory detection
    and avoidance
- - Automatic periodic keep-alive pinging and pong responses
- - Random nonce generation and self connection detection
- - Proper handling of bloom filter related commands when the caller does not specify the related flag to signal support
+7. Automatic periodic keep-alive pinging and pong responses
+8. Random nonce generation and self connection detection
+9. Proper handling of bloom filter related commands when the caller does not specify the related flag to signal support
    - Disconnects the peer when the protocol version is high enough
    - Does not invoke the related callbacks for older protocol versions
- - Snapshottable peer statistics such as the total number of bytes read and written, the remote address, user agent, and negotiated protocol version
- - Helper functions pushing addresses, getblocks, getheaders, and reject
+10. Snapshottable peer statistics such as the total number of bytes read and written, the remote address, user agent, and negotiated protocol version
+11. Helper functions pushing addresses, getblocks, getheaders, and reject
    messages
    - These could all be sent manually via the standard message output function, but the helpers provide additional nice functionality such as duplicate filtering and address randomization
- - Ability to wait for shutdown/disconnect
- - Comprehensive test coverage
+12. Ability to wait for shutdown/disconnect
+13. Comprehensive test coverage
   
 [detail](https://github.com/btcsuite/btcd/tree/master/peer)
 
 ### 1.2.14. /rpcclient
-封装的RPC调用客户端
-```
+
+>封装的RPC调用客户端
+
 rpcclient implements a Websocket-enabled Bitcoin JSON-RPC client package written in Go. 
 It provides a robust and easy to use client for interfacing with a Bitcoin RPC server 
 that uses a btcd/bitcoin core compatible Bitcoin JSON-RPC API.
-```
+
 
 [detail](https://github.com/btcsuite/btcd/tree/master/rpcclient)
 
 ### 1.2.15. /txscript
-提供交易中使用的基于堆的语言实现,非图灵完备。
-```
+
+>提供交易中使用的基于堆的语言实现,非图灵完备。
+
 Bitcoin provides a stack-based, FORTH-like language for the scripts in the bitcoin transactions. 
 This language is not turing complete although it is still fairly powerful. 
-A description of the language can be found at https://en.bitcoin.it/wiki/Script
-```
+A description of the language can be found at <https://en.bitcoin.it/wiki/Script>
+
 
 [detail](https://github.com/btcsuite/btcd/tree/master/txscript)
 
 ### 1.2.16. /wire
-数据交换网络协议
+
+>数据交换网络协议
 
 The bitcoin protocol consists of exchanging messages between peers. Each message is preceded by a header which identifies 
 information about it such as which bitcoin network it is a part of, its type, how big it is, and a checksum to verify validity. 
@@ -309,7 +322,7 @@ message.go:
 
 [detail](https://github.com/btcsuite/btcd/tree/master/wire)
 
-**BlockHeader**
+>**BlockHeader**
 ```
 // BlockHeader defines information about a block and is used in the bitcoin
 // block (MsgBlock) and headers (MsgHeaders) messages.
@@ -337,24 +350,24 @@ type BlockHeader struct {
 ## 1.3. 主要代码
 
 ### 1.3.1. btcd.go 
-main入口，处理流程
+>main入口，处理流程
 
-- runtime.GOMAXPROCS(runtime.NumCPU())
-- Up some limits.
-```
+>1. runtime.GOMAXPROCS(runtime.NumCPU())
+>2. Up some limits.
+```go
 if err := limits.SetLimits(); err != nil {
     fmt.Fprintf(os.Stderr, "failed to set limits: %v\n", err)
     os.Exit(1)
 }
 ```
-- Load configuration and parse command line.  
-```
+>3. Load configuration and parse command line.  
+```go
 This function also initializes logging and configures it accordingly.
 
 tcfg, _, err := loadConfig()
 ```
-- Load the block database.
-```
+>4. Load the block database.
+```go
 loadBlockDB loads (or creates when needed) the block database taking into account the selected database 
 backend and returns a handle to it.  
 It also contains additional logic such warning the user if there are multiple databases
@@ -362,7 +375,7 @@ which consume space on the file system and ensuring the regression test database
 when in regression test mode.
 ```
 - Create server and start it.
-```
+```go
 // Create server and start it.
 server, err := newServer(cfg.Listeners, db, activeNetParams.Params,
     interrupt)
@@ -382,9 +395,9 @@ server.Start()
 ```
 
 ### 1.3.2. config.go 
-配置管理
+>配置管理
 
-```
+```go
 
 loadConfig initializes and parses the config using a config file and command line options.
 The configuration proceeds as follows:
@@ -399,15 +412,17 @@ Command line options always take precedence.
 ```
 
 ### 1.3.3. server.go 
-server是最重要的部分。它主要完成如下功能
 
-- 初始化所有需要的组件
-- 启动相关服务
-- 实现组件的通信功能
+> server是最重要的部分。它主要完成如下功能
 
-主要结构体：server 和serverPeer
+1. 初始化所有需要的组件
+2. 启动相关服务
+3. 实现组件的通信功能
 
-#### server
+>主要结构体：server 和 serverPeer
+
+> server
+
 ```
 // server provides a bitcoin server for handling communications to and from
 // bitcoin peers.
@@ -465,7 +480,7 @@ type server struct {
 }
 ```
 
-#### serverPeer
+>serverPeer
 
 实现节点通信相关的接口
 

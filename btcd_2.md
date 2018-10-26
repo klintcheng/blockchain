@@ -59,7 +59,7 @@ dbPath := blockDbPath(cfg.DbType) //  cfg.DbType == ffldb
 2. 打开db
 db, err := database.Open(cfg.DbType, dbPath, activeNetParams.Net)
 
-```
+```go
 func Open(dbType string, args ...interface{}) (DB, error) {
     drv, exists := drivers[dbType]
     if !exists {
@@ -83,7 +83,7 @@ db, err = database.Create(cfg.DbType, dbPath, activeNetParams.Net)
 
 ### 1.3.1. 创建addressManager
 
-```
+```go
 amgr := addrmgr.New(cfg.DataDir, btcdLookup)
 
 addrmgr会读取默认的节点，配置文件在peers.json：
@@ -93,7 +93,7 @@ filepath.Join(dataDir, "peers.json")
 ### 1.3.2. initListeners
 
 启用用监听tcp4和tcp6
-```
+```go
 const defaultServices = wire.SFNodeNetwork | wire.SFNodeBloom |
         wire.SFNodeWitness | wire.SFNodeCF
 
@@ -111,7 +111,7 @@ if !cfg.DisableListen {
 ```
 ### 1.3.3. 创建一个server
 
-```
+```golang
 server provides a bitcoin server for handling communications to and from
 bitcoin peers.
 
@@ -142,7 +142,8 @@ s := server{
 索引相关的包在btcd/blockchain/indexers/中。索引数据是通过ffldb保存到leveldb中。索引的创建都与配置有关，默认是不启用索引。
 
 1).创建s.TxIndex和s.AddrIndex
-```
+
+```golang
 s.txIndex = indexers.NewTxIndex(db)
 
 AddrIndex依赖TxIndex
@@ -172,7 +173,8 @@ indexManager = indexers.NewManager(db, indexes)
 ### 1.3.5. mergeCheckpoints
 
 ### 1.3.6. 创建blockchain对象
-```
+
+```golang
 s.chain, err = blockchain.New(&blockchain.Config{
         DB:           s.db,
         Interrupt:    interrupt,
@@ -187,8 +189,10 @@ s.chain, err = blockchain.New(&blockchain.Config{
 ```
 
 ### 1.3.7. 创建FeeEstimator
+
 FeeEstimator 用于评估当前交易费用。
-```
+
+```golang
 // Search for a FeeEstimator state in the database. If none can be found
 // or if it cannot be loaded, create a new one.
 db.Update(func(tx database.Tx) error {
@@ -231,7 +235,7 @@ A key responsbility of the bitcoin network is mining user-generated transactions
  In order to facilitate this, the mining process relies on having a
 readily-available source of transactions to include in a block that is being solved.
 
-```
+```go
 txC := mempool.Config{
     Policy: mempool.Policy{
         DisableRelayPriority: cfg.NoRelayPriority,
@@ -260,12 +264,13 @@ s.txMemPool = mempool.New(&txC)
 ```
 
 ### 1.3.9. 创建syncManager
+
 syncManager用于节点间消息同步，如区块。
 
 SyncManager is used to communicate block related messages with peers. The SyncManager is started as by executing Start() in a goroutine. Once started,it selects peers to sync from and starts the initial block download. Once the
 chain is in sync, the SyncManager handles incoming block and header notifications and relays announcements of new blocks to peers.
 
-```
+```go
 s.syncManager, err = netsync.New(&netsync.Config{
     PeerNotifier:       &s,
     Chain:              s.chain,
@@ -279,7 +284,7 @@ s.syncManager, err = netsync.New(&netsync.Config{
 
 ### 1.3.10. 创建cpu挖矿实例
 
-```
+```go
 Create the mining policy and block template generator based on the configuration options.
 NOTE: The CPU miner relies on the mempool, so the mempool has to be created before calling the function to create the CPU miner.
 
@@ -305,8 +310,9 @@ s.cpuMiner = cpuminer.New(&cpuminer.Config{
 ```
 
 ### 1.3.11. 创建newAddressFunc
+
 newAddressFunc用于得到一个新的节点地址，里面会用到随机算法。
-```
+```go
 Only setup a function to return new addresses to connect to when not running in connect-only mode.  
 The simulation network is always in connect-only mode since it is only intended to connect to specified peers 
 and actively avoid advertising and connecting to discovered peers in order to prevent it 
@@ -329,7 +335,7 @@ if !cfg.SimNet && len(cfg.ConnectPeers) == 0 {
 ### 1.3.12. 创建connmgr
 
 connmgr 用于创建并维护连结，里面有两个重要的参数OnConnection和OnAccept用于创建peer.
-```
+```go
 // Create a connection manager.
 targetOutbound := defaultTargetOutbound
 if cfg.MaxPeers < targetOutbound {
@@ -352,7 +358,7 @@ s.connManager = cmgr
 
 ### 1.3.13. 连结配置的固定节点
 
-```
+```go
 // Start up persistent peers.
 permanentPeers := cfg.ConnectPeers
 if len(permanentPeers) == 0 {
@@ -373,7 +379,7 @@ for _, addr := range permanentPeers {
 
 ### 1.3.14. 启用RPC服务
 
-```
+```go
 if !cfg.DisableRPC {
     // Setup listeners for the configured RPC listen addresses and
     // TLS settings.
@@ -416,16 +422,16 @@ if !cfg.DisableRPC {
 
 ## 1.4. server.start()
 
-start会根据配置启用几个独立的模块。
+>start会根据配置启用几个独立的模块。
 
-- go s.peerHandler()
-- go s.upnpUpdateThread()
-- go s.rebroadcastHandler()
-- s.rpcServer.Start()
-- s.cpuMiner.Start()
+1. go s.peerHandler()
+2. go s.upnpUpdateThread()
+3. go s.rebroadcastHandler()
+4. s.rpcServer.Start()
+5. s.cpuMiner.Start()
 
-**code:**
-```
+```go
+
 // Start begins accepting connections from peers.
 func (s *server) Start() {
     // Already started?
@@ -476,8 +482,7 @@ peerHandler启动了节点相关的三个管理服务。
 同时，它会一直循环去读取管道中的节点消息。调用相关的处理器处理。
 直到收到退出命令，断开所有节点的连结。最后，调用s.wg.Done()终止等待。
 
-**code:**
-```
+```go
 // peerHandler is used to handle peer operations such as adding and removing
 // peers to and from the server, banning peers, and broadcasting messages to
 // peers.  It must be run in a goroutine.

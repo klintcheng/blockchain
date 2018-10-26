@@ -12,6 +12,10 @@
         - [1.1.3. 连接失败](#113-连接失败)
             - [1.1.3.1. 失败情况](#1131-失败情况)
             - [1.1.3.2. 失败处理](#1132-失败处理)
+    - [1.2. 断开连结](#12-断开连结)
+        - [1.2.1. 节点断开监听](#121-节点断开监听)
+        - [1.2.2. 处理节点断开](#122-处理节点断开)
+        - [1.2.3. 处理连接断开](#123-处理连接断开)
 
 <!-- /TOC -->
 ## 1.1. 启动连接管理
@@ -508,3 +512,155 @@ for _, addr := range permanentPeers {
     })
 }
 ```
+
+## 1.2. 断开连结
+
+正常情况下，收到退出事情（channal p.quit）时，会断开连结。我们来来退出的流程处理：
+
+### 1.2.1. 节点断开监听
+在节点创建时，会监听退出事件。
+
+```
+func (s *server) outboundPeerConnected(c *connmgr.ConnReq, conn net.Conn) {
+    sp := newServerPeer(s, c.Permanent)
+    ...
+    go s.peerDoneHandler(sp)
+    ...
+}
+
+func (s *server) peerDoneHandler(sp *serverPeer) {
+    sp.WaitForDisconnect()
+    s.donePeers <- sp
+    ...
+}
+
+func (p *Peer) WaitForDisconnect() {
+    <-p.quit
+}
+```
+
+节点处理器：
+```
+func (s *server) peerHandler() {
+    ...
+    // Disconnected peers.
+    case p := <-s.donePeers:
+        s.handleDonePeerMsg(state, p)
+    ...
+```
+
+### 1.2.2. 处理节点断开
+
+```
+// handleDonePeerMsg deals with peers that have signalled they are done.  It is
+// invoked from the peerHandler goroutine.
+func (s *server) handleDonePeerMsg(state *peerState, sp *serverPeer) {
+    ...
+
+    if sp.connReq != nil {
+        s.connManager.Disconnect(sp.connReq.ID())
+    }
+
+    // Update the address' last seen time if the peer has acknowledged
+    // our version and has sent us its version as well.
+    if sp.VerAckReceived() && sp.VersionKnown() && sp.NA() != nil {
+        s.addrManager.Connected(sp.NA())
+    }
+
+    // If we get here it means that either we didn't know about the peer
+    // or we purposefully deleted it.
+}
+```
+
+- 处理连接断开
+- 处理地址
+    - 修改当前连接的NetAddress中的Timestamp（Last time the address was seen.）
+  
+
+### 1.2.3. 处理连接断开
+
+调用Disconnect发送断开通知到连接处理器goroutine中处理：
+
+```
+// Disconnect disconnects the connection corresponding to the given connection
+// id. If permanent, the connection will be retried with an increasing backoff
+// duration.
+func (cm *ConnManager) Disconnect(id uint64) {
+    if atomic.LoadInt32(&cm.stop) != 0 {
+        return
+    }
+
+    select {
+    case cm.requests <- handleDisconnected{id, true}:
+    case <-cm.quit:
+    }
+}
+```
+
+开始处理连接断开：
+
+```
+case handleDisconnected:
+    connReq, ok := conns[msg.id]
+    if !ok {
+        connReq, ok = pending[msg.id]
+        if !ok {
+            log.Errorf("Unknown connid=%d",
+                msg.id)
+            continue
+        }
+
+        // Pending connection was found, remove
+        // it from pending map if we should
+        // ignore a later, successful
+        // connection.
+        connReq.updateState(ConnCanceled)
+        log.Debugf("Canceling: %v", connReq)
+        delete(pending, msg.id)
+        continue
+
+    }
+
+    // An existing connection was located, mark as
+    // disconnected and execute disconnection
+    // callback.
+    log.Debugf("Disconnected from %v", connReq)
+    delete(conns, msg.id)
+
+    if connReq.conn != nil {
+        connReq.conn.Close()
+    }
+
+    if cm.cfg.OnDisconnection != nil {
+        go cm.cfg.OnDisconnection(connReq)
+    }
+
+    // All internal state has been cleaned up, if
+    // this connection is being removed, we will
+    // make no further attempts with this request.
+    if !msg.retry {
+        connReq.updateState(ConnDisconnected)
+        continue
+    }
+
+    // Otherwise, we will attempt a reconnection if
+    // we do not have enough peers, or if this is a
+    // persistent peer. The connection request is
+    // re added to the pending map, so that
+    // subsequent processing of connections and
+    // failures do not ignore the request.
+    if uint32(len(conns)) < cm.cfg.TargetOutbound ||
+        connReq.Permanent {
+
+        connReq.updateState(ConnPending)
+        log.Debugf("Reconnecting to %v",
+            connReq)
+        pending[msg.id] = connReq
+        cm.handleFailedConn(connReq)
+}
+```
+
+- 清理工作
+- 如果传入的retry为true，直接结束(主动断开情况下，retry=true)
+- 否则，尝试重新连接（满足条件）。
+

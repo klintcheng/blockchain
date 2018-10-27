@@ -18,11 +18,12 @@
         - [1.2.3. 处理连接断开](#123-处理连接断开)
 
 <!-- /TOC -->
+
 ## 1.1. 启动连接管理
 
 上一章讲了节点地址服务。当前节点得到一些可用地址之后，就会建立连接，维护起来。在这个章，我们来看看第一个连结是如何建立的。首先，我们从go s.connManager.Start()开始，看看这个服务启动时做了什么事。
 
-```
+```go
 // Start launches the connection manager and begins connecting to the network.
 func (cm *ConnManager) Start() {
     // Already started?
@@ -49,7 +50,8 @@ func (cm *ConnManager) Start() {
 }
 ```
 
-Start 做了三件事：
+>Start 做了三件事：
+
 - 启动连接处理器
 - 启动端口监听处理
 - 创建一些接连（默认8个）
@@ -60,7 +62,7 @@ Start 做了三件事：
 
 #### 1.1.1.1. net.Listen
 
-```
+```go
 // initListeners initializes the configured net listeners and adds any bound
 // addresses to the address manager. Returns the listeners and a NAT interface,
 // which is non-nil if UPnP is in use.
@@ -85,11 +87,12 @@ func initListeners(amgr *addrmgr.AddrManager, listenAddrs []string, services wir
     return listeners, nat, nil
 }
 ```
+
 由于我们没有配置，默认情况会启用ip4和ip6的tcp端口监听。
 
 #### 1.1.1.2. listener.Accept()
 
-```
+```go
 // listenHandler accepts incoming connections on a given listener.  It must be
 // run as a goroutine.
 func (cm *ConnManager) listenHandler(listener net.Listener) {
@@ -127,7 +130,7 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 }
 ```
 
-**这个回调方法就会创建一个ServerPeer, 分为如下几步**
+>**这个回调方法就会创建一个ServerPeer, 分为如下几步**
 
 - 这里创建了一个新的节点
 - 判断是否在白名单中。
@@ -140,8 +143,9 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 
 上面的逻辑是被动建立一个连接。下面我们来看看，得到种子节点之后，是如何主动去连接一个节点的。
 
-在connManager.Start()中会默认主动连接一些节点：
-```
+>在connManager.Start()中会默认主动连接一些节点：
+
+```go
 for i := atomic.LoadUint64(&cm.connReqCount); i < uint64(cm.cfg.TargetOutbound); i++ {
     go cm.NewConnReq()
 }
@@ -152,7 +156,7 @@ for i := atomic.LoadUint64(&cm.connReqCount); i < uint64(cm.cfg.TargetOutbound);
 
 #### 1.1.2.1. NewConnReq
 
-```
+```go
 // NewConnReq creates a new connection request and connects to the
 // corresponding address.
 func (cm *ConnManager) NewConnReq() {
@@ -199,6 +203,7 @@ func (cm *ConnManager) NewConnReq() {
     cm.Connect(c)
 }
 ```
+
 - 创建ConnReq并设置id
 - 创建一个registerPending写到无缓冲的requests通道中
 - 等待处理之后的通知(channal done)
@@ -207,7 +212,7 @@ func (cm *ConnManager) NewConnReq() {
   
 我们看下在connHandler的处理：
 
-```
+```go
 select {
 case req := <-cm.requests:
     switch msg := req.(type) {
@@ -219,10 +224,12 @@ case req := <-cm.requests:
         close(msg.done)
      
 ```
+
 这个处理很简单，更新状态，添加到pending中，close(msg.done)之后会唤醒NewConnReq
 
-newAddressFunc 方法就是调用 s.addrManager.GetAddress()得到地址。
-```
+>newAddressFunc 方法就是调用 s.addrManager.GetAddress()得到地址。
+
+```go
 newAddressFunc = func() (net.Addr, error) {
     for tries := 0; tries < 100; tries++ {
         addr := s.addrManager.GetAddress()
@@ -265,7 +272,7 @@ newAddressFunc = func() (net.Addr, error) {
 
 开始拨号连接，cm.cfg.Dial(c.Addr)调用的方法就是net.Dial。连接成功之后，就通知处理器处理(connHandler)。
 
-```
+```go
 // Connect assigns an id and dials a connection to the address of the
 // connection request.
 func (cm *ConnManager) Connect(c *ConnReq) {
@@ -296,8 +303,7 @@ func (cm *ConnManager) Connect(c *ConnReq) {
 
 **connHandler**:
 
-```
-
+```go
 case handleConnected:
     connReq := msg.c
 
@@ -337,9 +343,9 @@ cmgr, err := connmgr.New(&connmgr.Config{
 })
 ```
 
-**建立出去的连接，与inboundPeerConnected方法类似，会新建立一个ServerPeer**
+>**出去的连接，与inboundPeerConnected方法类似，会新建立一个ServerPeer**
 
-```
+```go
 // outboundPeerConnected is invoked by the connection manager when a new
 // outbound connection is established.  It initializes a new outbound server
 // peer instance, associates it with the relevant state such as the connection
@@ -379,10 +385,11 @@ func (a *AddrManager) Attempt(addr *wire.NetAddress) {
     ka.lastattempt = time.Now()
 }
 ```
+
 这个方法中，会修改KnownAddress中的 **attempts 和 lastattempt**。
 目前为止，地址相关的几个属性都用到了。还有一个lastsuccess没有出现，这个属性是在Good方法中做的修改，先不管它是在什么情况下调用。
 
-```
+```go
 // Good marks the given address as good.  To be called after a successful
 // connection and version exchange.  If the address is unknown to the address
 // manager it will be ignored.
@@ -402,13 +409,13 @@ func (a *AddrManager) Good(addr *wire.NetAddress) {
 
 ### 1.1.3. 连接失败
 
-两种情况下会失败，会发一个失败请求：
+>两种情况下会失败，会发一个失败请求：
 
 #### 1.1.3.1. 失败情况
 
 - GetNewAddress error
   
-```
+```go
 addr, err := cm.cfg.GetNewAddress()
 if err != nil {
     select {
@@ -421,7 +428,7 @@ if err != nil {
 
 - Dial error
 
-```
+```go
 conn, err := cm.cfg.Dial(c.Addr)
 if err != nil {
     select {
@@ -434,7 +441,7 @@ if err != nil {
 
 #### 1.1.3.2. 失败处理
 
-```
+```go
 func (cm *ConnManager) connHandler() {
 ...
 case handleFailed:
@@ -453,7 +460,7 @@ case handleFailed:
 }
 ```
 
-```
+```go
 // handleFailedConn handles a connection failed due to a disconnect or any
 // other failure. If permanent, it retries the connection after the configured
 // retry duration. Otherwise, if required, it makes a new connection request.
@@ -488,13 +495,15 @@ func (cm *ConnManager) handleFailedConn(c *ConnReq) {
     }
 }
 ```
-失败情况下，会有两种处理方式：
+
+>失败情况下，会有两种处理方式：
+
 1. 永久连接，在一定时间之后直接重连。
 2. 非永久连接，调用NewConnReq，获取另一个地址去连接。
 
 Permanent默认为false。 在server.NewServer()时，如果有配置固定节点，会当作永久接连。
 
-```
+```go
 // Start up persistent peers.
 permanentPeers := cfg.ConnectPeers
 if len(permanentPeers) == 0 {
@@ -518,9 +527,10 @@ for _, addr := range permanentPeers {
 正常情况下，收到退出事情（channal p.quit）时，会断开连结。我们来来退出的流程处理：
 
 ### 1.2.1. 节点断开监听
+
 在节点创建时，会监听退出事件。
 
-```
+```go
 func (s *server) outboundPeerConnected(c *connmgr.ConnReq, conn net.Conn) {
     sp := newServerPeer(s, c.Permanent)
     ...
@@ -539,8 +549,9 @@ func (p *Peer) WaitForDisconnect() {
 }
 ```
 
-节点处理器：
-```
+>节点处理器：
+
+```go
 func (s *server) peerHandler() {
     ...
     // Disconnected peers.
@@ -551,7 +562,7 @@ func (s *server) peerHandler() {
 
 ### 1.2.2. 处理节点断开
 
-```
+```go
 // handleDonePeerMsg deals with peers that have signalled they are done.  It is
 // invoked from the peerHandler goroutine.
 func (s *server) handleDonePeerMsg(state *peerState, sp *serverPeer) {
@@ -573,15 +584,14 @@ func (s *server) handleDonePeerMsg(state *peerState, sp *serverPeer) {
 ```
 
 - 处理连接断开
-- 处理地址
-    - 修改当前连接的NetAddress中的Timestamp（Last time the address was seen.）
-  
+- 处理地址  
+    ```修改当前连接的NetAddress中的Timestamp（Last time the address was seen.）```
 
 ### 1.2.3. 处理连接断开
 
 调用Disconnect发送断开通知到连接处理器goroutine中处理：
 
-```
+```go
 // Disconnect disconnects the connection corresponding to the given connection
 // id. If permanent, the connection will be retried with an increasing backoff
 // duration.
@@ -599,7 +609,7 @@ func (cm *ConnManager) Disconnect(id uint64) {
 
 开始处理连接断开：
 
-```
+```go
 case handleDisconnected:
     connReq, ok := conns[msg.id]
     if !ok {

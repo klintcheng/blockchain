@@ -11,6 +11,7 @@
         - [1.3.3. 应答ver消息](#133-应答ver消息)
 
 <!-- /TOC -->
+
 ## 1.1. peer overview
 
 The overall data flow of a peer is split into **3 goroutines**.  Inbound
@@ -44,7 +45,8 @@ provided as a convenience.
 
 当一个serverpeer创建完成之后，会关联一个连接，然后调用start启用节点。
 AssociateConnection在前面已经提到过。
-```
+
+```go
 // AssociateConnection associates the given conn to the peer.   Calling this
 // function when the peer is already connected will have no effect.
 func (p *Peer) AssociateConnection(conn net.Conn) {
@@ -60,7 +62,7 @@ func (p *Peer) AssociateConnection(conn net.Conn) {
 
 **p.start():**
 
-```
+```go
 // start begins processing input and output messages.
 func (p *Peer) start() error {
     log.Tracef("Starting peer %s", p)
@@ -102,31 +104,32 @@ func (p *Peer) start() error {
 ```
 
 > peer会启用一些处理器：
-> - stallHandler： 消息回复延时处理
-> 
->   handles stall detection for the peer.  This entails keeping track of expected responses and assigning them deadlines while accounting for the time spent in callbacks.  It must be run as a goroutine.
-> - inHandler: 处理进入的消息
-> 
->   handles all incoming messages for the peer.  It must be run as a goroutine.
-> - queueHandler： 处理节点出去的消息，写到sendQueue队列
-> 
->   handles the queuing of outgoing data for the peer. This runs as a muxer for various sources of input so we can ensure that server and peer handlers will not block on us sending a message.  That data is then passed on to outHandler to be actually written.
-> - outHandler： 处理sendQueue消息，发送出去
-> 
->   handles all outgoing messages for the peer.  It must be run as a goroutine.  It uses a buffered channel to serialize output messages while allowing the sender to continue running asynchronously
-> - pingHandler：心跳处理
-> 
->   periodically pings the peer.  It must be run as a goroutine.
+> 1. stallHandler： 消息回复延时处理  
+    handles stall detection for the peer.  This entails keeping track of expected responses and assigning them deadlines while accounting for the time spent in callbacks.  It must be run as a goroutine.
+    
+> 2. inHandler: 处理进入的消息  
+    handles all incoming messages for the peer.  It must be run as a goroutine.
+
+> 3. queueHandler： 处理节点出去的消息，写到sendQueue队列  
+    handles the queuing of outgoing data for the peer. This runs as a muxer for various sources of input so we can ensure that server and peer handlers will not block on us sending a message.  That data is then passed on to outHandler to be actually written.
+    
+> 4. outHandler： 处理sendQueue消息，发送出去  
+    handles all outgoing messages for the peer.  It must be run as a goroutine.  It uses a buffered channel to serialize output messages while allowing the sender to continue running asynchronously
+
+> 5. pingHandler：心跳处理  
+    periodically pings the peer.  It must be run as a goroutine.
 
 ## 1.3. peer握手
 
 当一个节点连接之后，它会发送自己的版本消息给对方，对方收到消息之后，也会回复自己的信息。
 
-!!!* Once one or more connections are established, the new node will send an addr message containing its own IP address to its neighbors. The neighbors will, in turn, forward the addr message to their neighbors, ensuring that the newly connected node becomes well known and better connected. Additionally, the newly connected node can send getaddr to the neighbors, asking them to return a list of IP addresses of other peers. That way, a node can find peers to connect to and advertise its existence on the network for other nodes to find it. Address propagation and discovery shows the address discovery protocol. [mastering bitcoin]
+
+**Once one or more connections are established, the new node will send an addr message containing its own IP address to its neighbors. The neighbors will, in turn, forward the addr message to their neighbors, ensuring that the newly connected node becomes well known and better connected. Additionally, the newly connected node can send getaddr to the neighbors, asking them to return a list of IP addresses of other peers. That way, a node can find peers to connect to and advertise its existence on the network for other nodes to find it. Address propagation and discovery shows the address discovery protocol. [mastering bitcoin]**
+
 
 在peer.start()中，首先会启用一个goroutine去处理握手。
 
-```
+```go
 negotiateErr := make(chan error, 1)
 go func() {
     if p.inbound {
@@ -136,9 +139,10 @@ go func() {
     }
 }()
 ```
+
 如果这个节点B是当前节点A接连过去的，那么它会调用negotiateOutboundProtocol。negotiateOutboundProtocol与negotiateInboundProtocol是一个必定是个相反的过程。
 
-```
+```go
 func (p *Peer) negotiateOutboundProtocol() error {
     if err := p.writeLocalVersionMsg(); err != nil {
         return err
@@ -148,7 +152,7 @@ func (p *Peer) negotiateOutboundProtocol() error {
 }
 ```
 
-```
+```go
 func (p *Peer) negotiateInboundProtocol() error {
     if err := p.readRemoteVersionMsg(); err != nil {
         return err
@@ -181,7 +185,7 @@ To connect to a known peer, nodes establish a TCP connection, usually to port 83
 
 可以看到，写消息是一个独立的逻辑，不依赖queueHandler等。创建一个消息之后，直接发送出去。
 
-```
+```go
 // writeLocalVersionMsg writes our version message to the remote peer.
 func (p *Peer) writeLocalVersionMsg() error {
     localVerMsg, err := p.localVersionMsg()
@@ -192,11 +196,12 @@ func (p *Peer) writeLocalVersionMsg() error {
     return p.writeMessage(localVerMsg, wire.LatestEncoding)
 }
 ```
+
 这里创建MsgVersion是一个重点。涉及到两个节点是否能正常沟通。
 
 > 创建MsgVersion
 
-```
+```go
 // localVersionMsg creates a version message that can be used to send to the
 // remote peer.
 func (p *Peer) localVersionMsg() (*wire.MsgVersion, error) {
@@ -259,9 +264,10 @@ func (p *Peer) localVersionMsg() (*wire.MsgVersion, error) {
     return msg, nil
 }
 ```
+
 localVersionMsg方法就是把自己节点的相关信息封装到MsgVersion中。
 
-```
+```go
 func NewMsgVersion(me *NetAddress, you *NetAddress, nonce uint64,
 	lastBlock int32) *MsgVersion {
 
@@ -280,13 +286,15 @@ func NewMsgVersion(me *NetAddress, you *NetAddress, nonce uint64,
     }
 }
 ```
+
 其中，获取当前节点的区块高是调用server.newestBlock()
-```
+
+```go
 // newestBlock returns the current best block hash and height using the format
 // required by the configuration for the peer package.
 func (sp *serverPeer) newestBlock() (*chainhash.Hash, int32, error) {
-	best := sp.server.chain.BestSnapshot()
-	return &best.Hash, best.Height, nil
+    best := sp.server.chain.BestSnapshot()
+    return &best.Hash, best.Height, nil
 }
 ```
 
@@ -294,7 +302,7 @@ func (sp *serverPeer) newestBlock() (*chainhash.Hash, int32, error) {
 
 读版本消息也是一个独立的逻辑。
 
-```
+```go
 // readRemoteVersionMsg waits for the next message to arrive from the remote
 // peer.  If the next message is not a version message or the version is not
 // acceptable then return an error.

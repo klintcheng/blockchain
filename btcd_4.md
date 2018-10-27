@@ -24,7 +24,7 @@
 
 首先，还是回到peerhandler中，看看addrmgr.start()做了什么事。
 
-```
+```go
 // Start begins the core address handler which manages a pool of known
 // addresses, timeouts, and interval based writes.
 func (a *AddrManager) Start() {
@@ -47,7 +47,8 @@ func (a *AddrManager) Start() {
 ### 1.1.1. 本地读取地址信息
 
 Start加载地址信息的代码：a.loadPeers()。它是从文件中加载记录的节点地址信息。
-```
+
+```go
 // loadPeers loads the known address from the saved file.  If empty, missing, or
 // malformed file, just don't load anything and start fresh
 func (a *AddrManager) loadPeers() {
@@ -69,10 +70,12 @@ func (a *AddrManager) loadPeers() {
     log.Infof("Loaded %d addresses from file '%s'", a.numAddresses(), a.peersFile)
 }
 ```
+
 读取文件会用到锁。然后调用a.deserializePeers(a.peersFile)读取文件，文件内容是json格式，因此，会反序列化为对象serializedAddrManager。我们来看下相关内容：
 
 **peers.json内容格式**
-```
+
+```go
 {
     "Version": 1,
     "Key": [
@@ -137,7 +140,9 @@ func (a *AddrManager) loadPeers() {
     ]
 }
 ```
+
 **对应的结构体如下**
+
 ```
 type serializedAddrManager struct {
     Version      int
@@ -170,12 +175,12 @@ type KnownAddress struct {
 }
 
 ```
+
 这里先不管它们的意思。大致知道节点地址配置就行了。后面一步步看。
 
 读取的KnownAddress最终会保存到addrIndex中：
 
-```
-
+```go
 func (a *AddrManager) deserializePeers(filePath string) error {
 
     _, err := os.Stat(filePath)
@@ -221,17 +226,18 @@ func (a *AddrManager) deserializePeers(filePath string) error {
     ...
 }
 ```
-NetAddressKey返回的格式为：
-- IPv4
-    ip:port
-- IPv6
-    [ip]:port
+
+> NetAddressKey返回的格式为：
+>- IPv4  
+>  ip:port
+>- IPv6  
+>  [ip]:port
 
 ### 1.1.2. 同步到本地文件
 
 同时，启动一个goroutine去定时处理地址。
 
-```
+```go
 // addressHandler is the main handler for the address manager.  It must be run
 // as a goroutine.
 func (a *AddrManager) addressHandler() {
@@ -252,6 +258,7 @@ out:
     log.Trace("Address handler done")
 }
 ```
+
 这里，代码比较简单。间隔10分钟保存一次内存中的节点数据到配置文件peers.json中:
 a.savePeers()与a.loadPeers()是一个相反的过程。
 
@@ -261,7 +268,7 @@ a.savePeers()与a.loadPeers()是一个相反的过程。
 
 回到server.start()中，在s.addrManager.Start()启动之后看到了相关代码。**
 
-```
+```go
 if !cfg.DisableDNSSeed {
     // Add peers discovered through DNS to the address manager.
     connmgr.SeedFromDNS(activeNetParams.Params, defaultRequiredServices,
@@ -276,8 +283,10 @@ if !cfg.DisableDNSSeed {
 }
 
 ```
+
 第一个参数就是在chaincfg包中硬编码的。第二个参数是常量。
-```
+
+```go
 // MainNetParams defines the network parameters for the main Bitcoin network.
 var MainNetParams = Params{
     Name:        "mainnet",
@@ -294,8 +303,10 @@ var MainNetParams = Params{
     ...
 }
 ```
+
 第三个参数是个方法。这个方法就是解析dns.传入dns,返回一组ip。
-```
+
+```go
 // btcdLookup resolves the IP of the given host using the correct DNS lookup
 // function depending on the configuration options.  For example, addresses will
 // be resolved using tor when the --proxy flag was specified unless --noonion
@@ -314,7 +325,7 @@ func btcdLookup(host string) ([]net.IP, error) {
 
 我们进入到这个方法内看看：
 
-```
+```go
 // SeedFromDNS uses DNS seeding to populate the address manager with peers.
 func SeedFromDNS(chainParams *chaincfg.Params, reqServices wire.ServiceFlag,
     lookupFn LookupFunc, seedFn OnSeed) {
@@ -360,13 +371,14 @@ func SeedFromDNS(chainParams *chaincfg.Params, reqServices wire.ServiceFlag,
     }
 }
 ```
+
 由于解析nds是一次网络io操作，因此这里会都放到一个goroutine里处理。这也是为什么最后一个参数是个回调函数的原因了。
 
 seedpeers, err := lookupFn(host) 会返回一组节点ip。最后包装成wire.NetAddress对象。添加到地址管理器中，我们来看下这个方法内部：
 
 **s.addrManager.AddAddresses(addrs, addrs[0])**
 
-```
+```go
 // AddAddresses adds new addresses to the address manager.  It enforces a max
 // number of addresses and silently ignores duplicate addresses.  It is
 // safe for concurrent access.
@@ -383,7 +395,7 @@ func (a *AddrManager) AddAddresses(addrs []*wire.NetAddress, srcAddr *wire.NetAd
 
 这里调用updateAddress。如果地址已经存在就会更新，否则就添加一条。
 
-```
+```go
 // updateAddress is a helper function to either update an address already known
 // to the address manager, or to add the address if not already known.
 func (a *AddrManager) updateAddress(netAddr, srcAddr *wire.NetAddress) {
@@ -432,17 +444,20 @@ func (a *AddrManager) updateAddress(netAddr, srcAddr *wire.NetAddress) {
 这里看到有调用getNewBucket，得到一个bucket号，原理类似于hashmap。
 
 **getNewBucket算法：**
-```
+
+```go
 doublesha256(key + sourcegroup + int64(doublesha256(key + group + sourcegroup))%bucket_per_source_group) % num_new_buckets
 ```
+
 系统设置一个bucket有64个地址。总共有1024个bucket。到这里我们就搞明白了前面**peers.json中NewBuckets为什么会有空的数组子元素了**
 
 由于存储空间是不可变的，因此添加一个地址之后会去检查，如果操过size,就把旧的删除。
 
-**看下这个方法的说明：**
+>**看下这个方法的说明：**
 
 先删除坏的地址，如果没有，就选择一个最旧的地址删除。会用到na.TTimestamp比较
-```
+
+```go
 // expireNew makes space in the new buckets by expiring the really bad entries.
 // If no bad entries are available we look at a few and remove the oldest.
 func (a *AddrManager) expireNew(bucket int) {
@@ -473,19 +488,20 @@ func (a *AddrManager) expireNew(bucket int) {
 }
 ```
 
-坏地址的判断：
+>**坏地址的判断：**
 
 - It claims to be from the future
 - It hasn't been seen in over a month
 - It has failed at least three times and never succeeded
 - It has failed ten times in the last week
 
-到此时，我们就可以理解KnownAddress中的三个属性是干什么用的了
-attempts : 尝试次数
-lastattempt : 最后一次尝试时间
-lastsuccess : 最后一次成功时间
+>到此时，我们就可以理解KnownAddress中的三个属性是干什么用的了
 
-```
+>- attempts : 尝试次数
+>- lastattempt : 最后一次尝试时间
+>- lastsuccess : 最后一次成功时间
+
+```go
 // numRetries is the number of tried without a single success before
 // we assume an address is bad.
 const numRetries = 3
@@ -531,6 +547,7 @@ func (ka *KnownAddress) isBad() bool {
     return false
 }
 ```
+
 至此，地址管理服务相关地址维护功能基本看过。但是上面的逻辑，是从第一次没有节点情况，从dns得到的节点。当此节点连接到其它节点之后，会发一个获取地址的消息，让其它节点给一份它自己的地址信息。
 
 ## 1.2. 获取随机地址方法
@@ -539,7 +556,7 @@ func (ka *KnownAddress) isBad() bool {
 
 ### 1.2.1. GetAddress
 
-```
+```go
 // GetAddress returns a single address that should be routable.  It picks a
 // random one from the possible addresses with preference given to ones that
 // have not been used recently and should not pick 'close' addresses
@@ -612,7 +629,7 @@ func (a *AddrManager) GetAddress() *KnownAddress {
 }
 ```
 
-GetAddress 返回一个**随机**的地址给上层。
+>GetAddress 返回一个**随机**的地址给上层。
 
 - 在已经连结过的节点(addrTried)和新节点(addrNew)之间选择概率为50%
 - 随机选择一个bucket
@@ -623,7 +640,7 @@ GetAddress 返回一个**随机**的地址给上层。
 
 factor随着失败的次数变大而变大，因此成功的概率也在变大。进入ka.chance()看下。地址的权重是如何处理的：
 
-```
+```go
 // chance returns the selection probability for a known address.  The priority
 // depends upon how recently the address has been seen, how recently it was last
 // attempted and how often attempts to connect to it have failed.
@@ -650,6 +667,7 @@ func (ka *KnownAddress) chance() float64 {
     return c
 }
 ```
+
 可以看出，最近10分钟内使用过的，权重会变很小。失败的次数越多，权重也是越小。
 
 
@@ -659,7 +677,7 @@ func (ka *KnownAddress) chance() float64 {
 
 我们先不管消息的发送，只看收到其它节点发送回来的地址的代码。节点之前沟通的消息处理都是在server.go中。因此，我们在这个文件中找到了OnAddr。来看看
 
-```
+```go
 // OnAddr is invoked when a peer receives an addr bitcoin message and is
 // used to notify the server about advertised addresses.
 func (sp *serverPeer) OnAddr(_ *peer.Peer, msg *wire.MsgAddr) {
@@ -718,7 +736,7 @@ sp.NA() 返回此peer的地址信息，作为这批地址的源。
 
 当其它节点请求地址列表时，此节点会从自己的缓存中取出地址返回。
 
-```
+```go
 // OnGetAddr is invoked when a peer receives a getaddr bitcoin message
 // and is used to provide the peer with known addresses from the address
 // manager.
@@ -757,7 +775,8 @@ func (sp *serverPeer) OnGetAddr(_ *peer.Peer, msg *wire.MsgGetAddr) {
 ```
 
 AddressCache()返回自己节点23%的地址。并且是随机生成。然后调用sp.pushAddrMsg(addrCache)发送出去。
-```
+
+```go
 // AddressCache returns the current address cache.  It must be treated as
 // read-only (but since it is a copy now, this is not as dangerous).
 func (a *AddrManager) AddressCache() []*wire.NetAddress {

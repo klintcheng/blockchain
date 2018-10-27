@@ -125,7 +125,7 @@ It is designed so that it may be used with the standard crypto/ecdsa packages pr
 
 ### 1.2.4. /btcjson
 
-> RPC远程调用协议
+> RPC远程调用协议
 
 Package btcjson implements concrete types for marshalling to and from the bitcoin JSON-RPC API. 
 A comprehensive suite of tests is provided to ensure proper functionality.
@@ -134,7 +134,7 @@ A comprehensive suite of tests is provided to ensure proper functionality.
 
 ### 1.2.5. /chaincfg
 
-> blockcahin核心配置
+> blockcahin核心配置
 
 Package chaincfg defines chain configuration parameters for the three standard Bitcoin networks 
 and provides the ability for callers to define their own custom Bitcoin networks.
@@ -149,7 +149,7 @@ and provides the ability for callers to define their own custom Bitcoin networks
 Usage:
   btcctl [OPTIONS] <command> <args...>
 
-btcctl -h 显示可用选项
+btcctl -h 显示可用选项
 btcctl -l 显示命令
 如：
 getaccount "address"

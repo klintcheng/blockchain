@@ -173,7 +173,7 @@ type blockNode struct {
 ```
 
 ## 1.2. blockchain创建流程
-
+
 >系统在启用时，在server.newServer()时会创建区块链对象，并做一些初始化工作。这里我用代码片段换掉代码，方便分析。
 
 >**chain.go/New**
@@ -472,7 +472,7 @@ func (b *BlockChain) createChainState() error {
     return err
 }
 ```
-这个方法里，会生成创世区块。然后得到一些基本状态，包括numTxns，blockSize，blockWeight等。最后会生成一些索引的bucket等，最后保存区块到ffldb中。根据上面的代码，其实就可以看出保存一个区块有那些方面。
+这个方法里，会生成创世区块。然后得到一些基本状态，包括numTxns，blockSize，blockWeight等。最后会生成一些索引的bucket等，最后保存区块到ffldb中。根据上面的代码，其实就可以看出保存一个区块有那些方面。
 
 1. 保存block头及状态到索引
 

@@ -116,18 +116,18 @@ func (p *Peer) start() error {
 > 4. outHandler： 处理sendQueue消息，发送出去  
     handles all outgoing messages for the peer.  It must be run as a goroutine.  It uses a buffered channel to serialize output messages while allowing the sender to continue running asynchronously
 
-> 5. pingHandler：心跳处理  
+> 5. pingHandler：心跳处理  
     periodically pings the peer.  It must be run as a goroutine.
 
 ## 1.3. peer握手
 
-当一个节点连接之后，它会发送自己的版本消息给对方，对方收到消息之后，也会回复自己的信息。
+当一个节点连接之后，它会发送自己的版本消息给对方，对方收到消息之后，也会回复自己的信息。
 
 
 **Once one or more connections are established, the new node will send an addr message containing its own IP address to its neighbors. The neighbors will, in turn, forward the addr message to their neighbors, ensuring that the newly connected node becomes well known and better connected. Additionally, the newly connected node can send getaddr to the neighbors, asking them to return a list of IP addresses of other peers. That way, a node can find peers to connect to and advertise its existence on the network for other nodes to find it. Address propagation and discovery shows the address discovery protocol. [mastering bitcoin]**
 
 
-在peer.start()中，首先会启用一个goroutine去处理握手。
+在peer.start()中，首先会启用一个goroutine去处理握手。
 
 ```go
 negotiateErr := make(chan error, 1)
@@ -140,7 +140,7 @@ go func() {
 }()
 ```
 
-如果这个节点B是当前节点A接连过去的，那么它会调用negotiateOutboundProtocol。negotiateOutboundProtocol与negotiateInboundProtocol是一个必定是个相反的过程。
+如果这个节点B是当前节点A接连过去的，那么它会调用negotiateOutboundProtocol。negotiateOutboundProtocol与negotiateInboundProtocol是一个必定是个相反的过程。
 
 ```go
 func (p *Peer) negotiateOutboundProtocol() error {
@@ -183,7 +183,7 @@ To connect to a known peer, nodes establish a TCP connection, usually to port 83
 >7. BestHeight  
 ``The block height of this node’s blockchain``
 
-可以看到，写消息是一个独立的逻辑，不依赖queueHandler等。创建一个消息之后，直接发送出去。
+可以看到，写消息是一个独立的逻辑，不依赖queueHandler等。创建一个消息之后，直接发送出去。
 
 ```go
 // writeLocalVersionMsg writes our version message to the remote peer.
@@ -197,7 +197,7 @@ func (p *Peer) writeLocalVersionMsg() error {
 }
 ```
 
-这里创建MsgVersion是一个重点。涉及到两个节点是否能正常沟通。
+这里创建MsgVersion是一个重点。涉及到两个节点是否能正常沟通。
 
 > 创建MsgVersion
 
@@ -265,7 +265,7 @@ func (p *Peer) localVersionMsg() (*wire.MsgVersion, error) {
 }
 ```
 
-localVersionMsg方法就是把自己节点的相关信息封装到MsgVersion中。
+localVersionMsg方法就是把自己节点的相关信息封装到MsgVersion中。
 
 ```go
 func NewMsgVersion(me *NetAddress, you *NetAddress, nonce uint64,
@@ -454,7 +454,7 @@ func (p *Peer) QueueMessageWithEncoding(msg wire.Message, doneChan chan<- struct
 }
 ```
 
-> step.3 缓冲队列
+> step.3 缓冲队列
 
 最终会创建一个outMsg放到outputQueue中。而outputQueue是在**queueHandler**中处理的。
 
@@ -515,7 +515,7 @@ out:
 }
 ```
 
-通过调用queuePacket，消息最后还是推到sendQueue。这里封装了一下，当waiting=false 时，直接发送，否则加才到pendingMsgs中，收到发送完成的通知之后，再去pendingMsgs取一下个消息发送。
+通过调用queuePacket，消息最后还是推到sendQueue。这里封装了一下，当waiting=false 时，直接发送，否则加才到pendingMsgs中，收到发送完成的通知之后，再去pendingMsgs取一下个消息发送。
 
 >step.4 消息发送处理
 ```
@@ -560,12 +560,12 @@ out:
 }
 ```
 
-> 这个里，做了几件事：
->1. 发送一个sccSendMessage通知给stallHandler
+> 这个里，做了几件事：
+>1. 发送一个sccSendMessage通知给stallHandler
 >2. 发送消息到socket
 >3. lastSend重置
 >4. 写doneChan，唤醒等待的goroutine
->5. 写p.sendDoneQueue，通知queueHandler处理缓冲队列中其它消息
+>5. 写p.sendDoneQueue，通知queueHandler处理缓冲队列中其它消息
 
 >step.5 消息发送到网络
 ```
@@ -588,7 +588,7 @@ func (p *Peer) writeMessage(msg wire.Message, enc wire.MessageEncoding) error {
     return err
 }
 ```
-- wire.WriteMessageWithEncodingN： 真正写消息到socket的方法。
+- wire.WriteMessageWithEncodingN： 真正写消息到socket的方法。
 - server.OnWrite： 用于通知server发送的数据量:
 ```
 // OnWrite is invoked when a peer sends a message and it is used to update
@@ -600,7 +600,7 @@ func (sp *serverPeer) OnWrite(_ *peer.Peer, bytesWritten int, msg wire.Message, 
 
 ### 1.3.3. 应答ver消息
 
-当一个节点A连结到节点B，并发送了VerAck时，B节点收到消息要处理。回到inHandler()，这个处理器是用于接收消息并处理。
+当一个节点A连结到节点B，并发送了VerAck时，B节点收到消息要处理。回到inHandler()，这个处理器是用于接收消息并处理。
 
 ```
 func (p *Peer) inHandler() {

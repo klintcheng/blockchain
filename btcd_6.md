@@ -8,7 +8,20 @@
     - [1.3. peer握手](#13-peer握手)
         - [1.3.1. 发送version消息](#131-发送version消息)
         - [1.3.2. 读version消息](#132-读version消息)
-        - [1.3.3. 应答ver消息](#133-应答ver消息)
+    - [1.4. 消息收发](#14-消息收发)
+        - [1.4.1. 消息结构](#141-消息结构)
+        - [1.4.2. 发消息](#142-发消息)
+            - [1.4.2.1. 写outputQueue](#1421-写outputqueue)
+            - [1.4.2.2. queueHandler](#1422-queuehandler)
+            - [1.4.2.3. outHandler](#1423-outhandler)
+            - [1.4.2.4. 消息发送到节点](#1424-消息发送到节点)
+        - [1.4.3. 收到消息](#143-收到消息)
+            - [1.4.3.1. inHandler](#1431-inhandler)
+            - [1.4.3.2. 消息处理](#1432-消息处理)
+            - [1.4.3.3. 消息回复](#1433-消息回复)
+    - [1.5. 心跳机制](#15-心跳机制)
+        - [1.5.1. pingHandler](#151-pinghandler)
+        - [1.5.2. 处理心跳](#152-处理心跳)
 
 <!-- /TOC -->
 
@@ -300,7 +313,12 @@ func (sp *serverPeer) newestBlock() (*chainhash.Hash, int32, error) {
 
 ### 1.3.2. 读version消息
 
-读版本消息也是一个独立的逻辑。
+>读版本消息也是一个独立的逻辑。
+
+1. 读出消息内容
+2. 更新当前节点peer相关状态
+3. 调用OnVersion
+4. 如果版本低于MinAcceptableProtocolVersion，回复reject packet，然后断开
 
 ```go
 // readRemoteVersionMsg waits for the next message to arrive from the remote
@@ -401,33 +419,345 @@ func (p *Peer) readRemoteVersionMsg() error {
 }
 ```
 
+>OnVersion是个很重要的方法，我们来看看
 
+```go
+// OnVersion is invoked when a peer receives a version bitcoin message
+// and is used to negotiate the protocol version details as well as kick start
+// the communications.
+func (sp *serverPeer) OnVersion(_ *peer.Peer, msg *wire.MsgVersion) *wire.MsgReject {
+    // Update the address manager with the advertised services for outbound
+    // connections in case they have changed.  This is not done for inbound
+    // connections to help prevent malicious behavior and is skipped when
+    // running on the simulation test network since it is only intended to
+    // connect to specified peers and actively avoids advertising and
+    // connecting to discovered peers.
+    //
+    // NOTE: This is done before rejecting peers that are too old to ensure
+    // it is updated regardless in the case a new minimum protocol version is
+    // enforced and the remote node has not upgraded yet.
+    isInbound := sp.Inbound()
+    remoteAddr := sp.NA()
+    addrManager := sp.server.addrManager
+    if !cfg.SimNet && !isInbound {
+        addrManager.SetServices(remoteAddr, msg.Services)
+    }
 
+    // Ignore peers that have a protcol version that is too old.  The peer
+    // negotiation logic will disconnect it after this callback returns.
+    if msg.ProtocolVersion < int32(peer.MinAcceptableProtocolVersion) {
+        return nil
+    }
 
+    // Reject outbound peers that are not full nodes.
+    wantServices := wire.SFNodeNetwork
+    if !isInbound && !hasServices(msg.Services, wantServices) {
+        missingServices := wantServices & ^msg.Services
+        srvrLog.Debugf("Rejecting peer %s with services %v due to not "+
+            "providing desired services %v", sp.Peer, msg.Services,
+            missingServices)
+        reason := fmt.Sprintf("required services %#x not offered",
+            uint64(missingServices))
+        return wire.NewMsgReject(msg.Command(), wire.RejectNonstandard, reason)
+    }
+
+    // Update the address manager and request known addresses from the
+    // remote peer for outbound connections.  This is skipped when running
+    // on the simulation test network since it is only intended to connect
+    // to specified peers and actively avoids advertising and connecting to
+    // discovered peers.
+    if !cfg.SimNet && !isInbound {
+        // After soft-fork activation, only make outbound
+        // connection to peers if they flag that they're segwit
+        // enabled.
+        chain := sp.server.chain
+        segwitActive, err := chain.IsDeploymentActive(chaincfg.DeploymentSegwit)
+        if err != nil {
+            peerLog.Errorf("Unable to query for segwit soft-fork state: %v",
+                err)
+            return nil
+        }
+
+        if segwitActive && !sp.IsWitnessEnabled() {
+            peerLog.Infof("Disconnecting non-segwit peer %v, isn't segwit "+
+                "enabled and we need more segwit enabled peers", sp)
+            sp.Disconnect()
+            return nil
+        }
+
+        // Advertise the local address when the server accepts incoming
+        // connections and it believes itself to be close to the best known tip.
+        if !cfg.DisableListen && sp.server.syncManager.IsCurrent() {
+            // Get address that best matches.
+            lna := addrManager.GetBestLocalAddress(remoteAddr)
+            if addrmgr.IsRoutable(lna) {
+                // Filter addresses the peer already knows about.
+                addresses := []*wire.NetAddress{lna}
+                sp.pushAddrMsg(addresses)
+            }
+        }
+
+        // Request known addresses if the server address manager needs
+        // more and the peer has a protocol version new enough to
+        // include a timestamp with addresses.
+        hasTimestamp := sp.ProtocolVersion() >= wire.NetAddressTimeVersion
+        if addrManager.NeedMoreAddresses() && hasTimestamp {
+            sp.QueueMessage(wire.NewMsgGetAddr(), nil)
+        }
+
+        // Mark the address as a known good address.
+        addrManager.Good(remoteAddr)
+    }
+
+    // Add the remote peer time as a sample for creating an offset against
+    // the local clock to keep the network time in sync.
+    sp.server.timeSource.AddTimeSample(sp.Addr(), msg.Timestamp)
+
+    // Signal the sync manager this peer is a new sync candidate.
+    sp.server.syncManager.NewPeer(sp.Peer)
+
+    // Choose whether or not to relay transactions before a filter command
+    // is received.
+    sp.setDisableRelayTx(msg.DisableRelayTx)
+
+    // Add valid peer to the server.
+    sp.server.AddPeer(sp)
+    return nil
+}
 ```
-// MsgVerAck defines a bitcoin verack message which is used for a peer to
-// acknowledge a version message (MsgVersion) after it has used the information
-// to negotiate parameters.  It implements the Message interface.
+
+因为出去或者进来的连接都会调用此方法，因此，上面会根据isInbound做些判断处理。比如，主动连结过去的节点如果没有SFNodeNetwork服务，就会回复MsgReject。这个回调处理，可以判断出节点的一些状态。因此干的事比较多。
+
+1. 更新地址拥有的服务
+```go
+addrManager.SetServices(remoteAddr, msg.Services)
+```
+2. 回复最优的本地地址给对方
+```go
+lna := addrManager.GetBestLocalAddress(remoteAddr)
+if addrmgr.IsRoutable(lna) {
+    // Filter addresses the peer already knows about.
+    addresses := []*wire.NetAddress{lna}
+    sp.pushAddrMsg(addresses)
+}
+```
+3. 向对方节点发送GetAddr消息,获取更多地址
+```go
+sp.QueueMessage(wire.NewMsgGetAddr(), nil)
+```
+4. 标记当前地址是可用的。
+```go
+addrManager.Good(remoteAddr)
+```
+5. 添加时间样本
+```go
+// Add the remote peer time as a sample for creating an offset against
+// the local clock to keep the network time in sync.
+sp.server.timeSource.AddTimeSample(sp.Addr(), msg.Timestamp)
+```
+6. 同步管理器中可以添加一个节用的节点
+```go
+sp.server.syncManager.NewPeer(sp.Peer)
+```
+6. 添加一个可用的节点到server中
+```go
+sp.server.AddPeer(sp)
+```
+
+>其中，addrManager.Good(remoteAddr)可以影响前面章节提到过的addrmanager.GetAddress()中地址权重。
+
+```go
+// Good marks the given address as good.  To be called after a successful
+// connection and version exchange.  If the address is unknown to the address
+// manager it will be ignored.
+func (a *AddrManager) Good(addr *wire.NetAddress) {
+    a.mtx.Lock()
+    defer a.mtx.Unlock()
+
+    ka := a.find(addr)
+    if ka == nil {
+        return
+    }
+
+    // ka.Timestamp is not updated here to avoid leaking information
+    // about currently connected peers.
+    now := time.Now()
+    ka.lastsuccess = now
+    ka.lastattempt = now
+    ka.attempts = 0
+
+    // move to tried set, optionally evicting other addresses if neeed.
+    if ka.tried {
+        return
+    }
+
+    // ok, need to move it to tried.
+
+    // remove from all new buckets.
+    // record one of the buckets in question and call it the `first'
+    addrKey := NetAddressKey(addr)
+    oldBucket := -1
+    for i := range a.addrNew {
+        // we check for existence so we can record the first one
+        if _, ok := a.addrNew[i][addrKey]; ok {
+            delete(a.addrNew[i], addrKey)
+            ka.refs--
+            if oldBucket == -1 {
+                oldBucket = i
+            }
+        }
+    }
+    a.nNew--
+
+    if oldBucket == -1 {
+        // What? wasn't in a bucket after all.... Panic?
+        return
+    }
+
+    bucket := a.getTriedBucket(ka.na)
+
+    // Room in this tried bucket?
+    if a.addrTried[bucket].Len() < triedBucketSize {
+        ka.tried = true
+        a.addrTried[bucket].PushBack(ka)
+        a.nTried++
+        return
+    }
+
+    // No room, we have to evict something else.
+    entry := a.pickTried(bucket)
+    rmka := entry.Value.(*KnownAddress)
+
+    // First bucket it would have been put in.
+    newBucket := a.getNewBucket(rmka.na, rmka.srcAddr)
+
+    // If no room in the original bucket, we put it in a bucket we just
+    // freed up a space in.
+    if len(a.addrNew[newBucket]) >= newBucketSize {
+        newBucket = oldBucket
+    }
+
+    // replace with ka in list.
+    ka.tried = true
+    entry.Value = ka
+
+    rmka.tried = false
+    rmka.refs++
+
+    // We don't touch a.nTried here since the number of tried stays the same
+    // but we decemented new above, raise it again since we're putting
+    // something back.
+    a.nNew++
+
+    rmkey := NetAddressKey(rmka.na)
+    log.Tracef("Replacing %s with %s in tried", rmkey, addrKey)
+
+    // We made sure there is space here just above.
+    a.addrNew[newBucket][rmkey] = rmka
+}
+```
+
+> 可以看到，它会对这个节点的地址信息做处理，提高这个地址被取到的机会。
+
+```go
+now := time.Now()
+ka.lastsuccess = now
+ka.lastattempt = now
+ka.attempts = 0
+```
+
+## 1.4. 消息收发
+
+在上面，我们看到调用一个serverpeer.QueueMessage发送了一条wire.NewMsgGetAddr()消息。我们回到这里，根着这个流程，看看消息收发的流程，内部逻辑。
+
+### 1.4.1. 消息结构
+
+>所有消息都实现Message接口的方法,每个消息都有一个command,用于识别。先看下Message接口和MsgGetAddr消息
+
+```go
+
+// Message is an interface that describes a bitcoin message.  A type that
+// implements Message has complete control over the representation of its data
+// and may therefore contain additional or fewer fields than those which
+// are used directly in the protocol encoded message.
+type Message interface {
+    BtcDecode(io.Reader, uint32, MessageEncoding) error
+    BtcEncode(io.Writer, uint32, MessageEncoding) error
+    Command() string
+    MaxPayloadLength(uint32) uint32
+}
+
+// MsgGetAddr implements the Message interface and represents a bitcoin
+// getaddr message.  It is used to request a list of known active peers on the
+// network from a peer to help identify potential nodes.  The list is returned
+// via one or more addr messages (MsgAddr).
 //
 // This message has no payload.
-type MsgVerAck struct{}
+type MsgGetAddr struct{}
 
 // Command returns the protocol command string for the message.  This is part
 // of the Message interface implementation.
-func (msg *MsgVerAck) Command() string {
-    return CmdVerAck
+func (msg *MsgGetAddr) Command() string {
+    return CmdGetAddr
 }
-```
-其中CmdVerAck = "verack"，为常量。
 
->step.2 写入outputQueue
-
+// CmdGetAddr = "getaddr"
 ```
+
+>**全部消息命令**：
+
+```go
+// MaxMessagePayload is the maximum bytes a message can be regardless of other
+// individual limits imposed by messages themselves.
+const MaxMessagePayload = (1024 * 1024 * 32) // 32MB
+
+// Commands used in bitcoin message headers which describe the type of message.
+const (
+    CmdVersion      = "version"
+    CmdVerAck       = "verack"
+    CmdGetAddr      = "getaddr"
+    CmdAddr         = "addr"
+    CmdGetBlocks    = "getblocks"
+    CmdInv          = "inv"
+    CmdGetData      = "getdata"
+    CmdNotFound     = "notfound"
+    CmdBlock        = "block"
+    CmdTx           = "tx"
+    CmdGetHeaders   = "getheaders"
+    CmdHeaders      = "headers"
+    CmdPing         = "ping"
+    CmdPong         = "pong"
+    CmdAlert        = "alert"
+    CmdMemPool      = "mempool"
+    CmdFilterAdd    = "filteradd"
+    CmdFilterClear  = "filterclear"
+    CmdFilterLoad   = "filterload"
+    CmdMerkleBlock  = "merkleblock"
+    CmdReject       = "reject"
+    CmdSendHeaders  = "sendheaders"
+    CmdFeeFilter    = "feefilter"
+    CmdGetCFilters  = "getcfilters"
+    CmdGetCFHeaders = "getcfheaders"
+    CmdGetCFCheckpt = "getcfcheckpt"
+    CmdCFilter      = "cfilter"
+    CmdCFHeaders    = "cfheaders"
+    CmdCFCheckpt    = "cfcheckpt"
+)
+```
+
+
+### 1.4.2. 发消息
+
+>QueueMessage为peer提供的消息发送接口,会有如下几步
+
+#### 1.4.2.1. 写outputQueue
+
+```go
 // QueueMessage adds the passed bitcoin message to the peer send queue.
 //
 // This function is safe for concurrent access.
 func (p *Peer) QueueMessage(msg wire.Message, doneChan chan<- struct{}) {
-	p.QueueMessageWithEncoding(msg, doneChan, wire.BaseEncoding)
+    p.QueueMessageWithEncoding(msg, doneChan, wire.BaseEncoding)
 }
 
 // QueueMessageWithEncoding adds the passed bitcoin message to the peer send
@@ -454,11 +784,11 @@ func (p *Peer) QueueMessageWithEncoding(msg wire.Message, doneChan chan<- struct
 }
 ```
 
-> step.3 缓冲队列
+#### 1.4.2.2. queueHandler
 
-最终会创建一个outMsg放到outputQueue中。而outputQueue是在**queueHandler**中处理的。
+>最终会创建一个outMsg放到outputQueue中。而outputQueue是在**queueHandler**中处理的。
 
-```
+```go
 // queueHandler handles the queuing of outgoing data for the peer. This runs as
 // a muxer for various sources of input so we can ensure that server and peer
 // handlers will not block on us sending a message.  That data is then passed on
@@ -517,8 +847,9 @@ out:
 
 通过调用queuePacket，消息最后还是推到sendQueue。这里封装了一下，当waiting=false 时，直接发送，否则加才到pendingMsgs中，收到发送完成的通知之后，再去pendingMsgs取一下个消息发送。
 
->step.4 消息发送处理
-```
+#### 1.4.2.3. outHandler
+
+```go
 func (p *Peer) outHandler() {
 out:
     for {
@@ -560,15 +891,16 @@ out:
 }
 ```
 
-> 这个里，做了几件事：
+> 这里，做了几件事：
 >1. 发送一个sccSendMessage通知给stallHandler
 >2. 发送消息到socket
 >3. lastSend重置
 >4. 写doneChan，唤醒等待的goroutine
 >5. 写p.sendDoneQueue，通知queueHandler处理缓冲队列中其它消息
 
->step.5 消息发送到网络
-```
+#### 1.4.2.4. 消息发送到节点
+
+```go
 // writeMessage sends a bitcoin message to the peer with logging.
 func (p *Peer) writeMessage(msg wire.Message, enc wire.MessageEncoding) error {
     // Don't do anything if we're disconnecting.
@@ -588,21 +920,25 @@ func (p *Peer) writeMessage(msg wire.Message, enc wire.MessageEncoding) error {
     return err
 }
 ```
+
 - wire.WriteMessageWithEncodingN： 真正写消息到socket的方法。
-- server.OnWrite： 用于通知server发送的数据量:
-```
+- server.OnWrite： 用于通知server当前发送的数据量
+
+```go
 // OnWrite is invoked when a peer sends a message and it is used to update
 // the bytes sent by the server.
 func (sp *serverPeer) OnWrite(_ *peer.Peer, bytesWritten int, msg wire.Message, err error) {
-	sp.server.AddBytesSent(uint64(bytesWritten))
+    sp.server.AddBytesSent(uint64(bytesWritten))
 }
 ```
 
-### 1.3.3. 应答ver消息
+### 1.4.3. 收到消息
 
-当一个节点A连结到节点B，并发送了VerAck时，B节点收到消息要处理。回到inHandler()，这个处理器是用于接收消息并处理。
+当一个节点A连结到节点B，并发送了一个请求时，B节点收到消息要处理。在Peer.Start()中启动的inHandler()，就是用于接收消息并处理的。我们以上面发的MsgGetAddr为例看下收到消息之后的处理。
 
-```
+#### 1.4.3.1. inHandler
+
+```go
 func (p *Peer) inHandler() {
     // The timer is stopped when a new message is received and reset after it
     // is processed.
@@ -648,8 +984,12 @@ out:
             if p.cfg.Listeners.OnVerAck != nil {
                 p.cfg.Listeners.OnVerAck(p, msg)
             }
+        case *wire.MsgGetAddr:
+            if p.cfg.Listeners.OnGetAddr != nil {
+                p.cfg.Listeners.OnGetAddr(p, msg)
+            }
 
-        ... MsgAddr/MsgGetAddr/MsgAddr/MsgPing/MsgPong/ more..
+        ...ignore more than MsgGetAddr/MsgAddr/MsgPing/MsgPong..
 
         default:
             log.Debugf("Received unhandled message of type %v "+
@@ -672,3 +1012,323 @@ out:
 }
 
 ```
+
+这个handler中，只要没有断开连接，会一直循环读消息，上面使用idleTimer实现了超时处理，超过5分钟没有收到消息就会调用回调方法，断开此节点的连接。跳出循环。
+
+#### 1.4.3.2. 消息处理
+
+>几乎所有消息的处理最后都是回调到server.go中ServerPeer结构体中的方法了。我们看下OnGetAddr这个回调的实现
+
+```go
+
+// OnGetAddr is invoked when a peer receives a getaddr bitcoin message
+// and is used to provide the peer with known addresses from the address
+// manager.
+func (sp *serverPeer) OnGetAddr(_ *peer.Peer, msg *wire.MsgGetAddr) {
+    // Don't return any addresses when running on the simulation test
+    // network.  This helps prevent the network from becoming another
+    // public test network since it will not be able to learn about other
+    // peers that have not specifically been provided.
+    if cfg.SimNet {
+        return
+    }
+
+    // Do not accept getaddr requests from outbound peers.  This reduces
+    // fingerprinting attacks.
+    if !sp.Inbound() {
+        peerLog.Debugf("Ignoring getaddr request from outbound peer ",
+            "%v", sp)
+        return
+    }
+
+    // Only allow one getaddr request per connection to discourage
+    // address stamping of inv announcements.
+    if sp.sentAddrs {
+        peerLog.Debugf("Ignoring repeated getaddr request from peer ",
+            "%v", sp)
+        return
+    }
+    sp.sentAddrs = true
+
+    // Get the current known addresses from the address manager.
+    addrCache := sp.server.addrManager.AddressCache()
+
+    // Push the addresses.
+    sp.pushAddrMsg(addrCache)
+}
+```
+
+#### 1.4.3.3. 消息回复
+
+最后两行代码，从地址管理器中得到可用的地址列表，调用pushAddrMsg返回。
+
+```go
+// pushAddrMsg sends an addr message to the connected peer using the provided
+// addresses.
+func (sp *serverPeer) pushAddrMsg(addresses []*wire.NetAddress) {
+    // Filter addresses already known to the peer.
+    addrs := make([]*wire.NetAddress, 0, len(addresses))
+    for _, addr := range addresses {
+        if !sp.addressKnown(addr) {
+            addrs = append(addrs, addr)
+        }
+    }
+    known, err := sp.PushAddrMsg(addrs)
+    if err != nil {
+        peerLog.Errorf("Can't push address message to %s: %v", sp.Peer, err)
+        sp.Disconnect()
+        return
+    }
+    sp.addKnownAddresses(known)
+}
+```
+
+>serverPeer中会调用peer中的同名方法
+
+```go
+// PushAddrMsg sends an addr message to the connected peer using the provided
+// addresses.  This function is useful over manually sending the message via
+// QueueMessage since it automatically limits the addresses to the maximum
+// number allowed by the message and randomizes the chosen addresses when there
+// are too many.  It returns the addresses that were actually sent and no
+// message will be sent if there are no entries in the provided addresses slice.
+//
+// This function is safe for concurrent access.
+func (p *Peer) PushAddrMsg(addresses []*wire.NetAddress) ([]*wire.NetAddress, error) {
+    addressCount := len(addresses)
+
+    // Nothing to send.
+    if addressCount == 0 {
+        return nil, nil
+    }
+
+    msg := wire.NewMsgAddr()
+    msg.AddrList = make([]*wire.NetAddress, addressCount)
+    copy(msg.AddrList, addresses)
+
+    // Randomize the addresses sent if there are more than the maximum allowed.
+    if addressCount > wire.MaxAddrPerMsg {
+        // Shuffle the address list.
+        for i := 0; i < wire.MaxAddrPerMsg; i++ {
+            j := i + rand.Intn(addressCount-i)
+            msg.AddrList[i], msg.AddrList[j] = msg.AddrList[j], msg.AddrList[i]
+        }
+
+        // Truncate it to the maximum size.
+        msg.AddrList = msg.AddrList[:wire.MaxAddrPerMsg]
+    }
+
+    p.QueueMessage(msg, nil)
+    return msg.AddrList, nil
+}
+```
+
+>这个方法又会生成一个MsgAddr消息体，这个消息有消息内容AddrList，因此，会有相应的编码/解码实现。调用QueueMessage把消息发送给A节点之后，在A节点的inhandler会有对应的处理方法。
+
+```go
+// NewMsgAddr returns a new bitcoin addr message that conforms to the
+// Message interface.  See MsgAddr for details.
+func NewMsgAddr() *MsgAddr {
+    return &MsgAddr{
+        AddrList: make([]*NetAddress, 0, MaxAddrPerMsg),
+    }
+}
+```
+
+>msgaddr.go
+
+```go
+const MaxAddrPerMsg = 1000
+
+// MsgAddr implements the Message interface and represents a bitcoin
+// addr message.  It is used to provide a list of known active peers on the
+// network.  An active peer is considered one that has transmitted a message
+// within the last 3 hours.  Nodes which have not transmitted in that time
+// frame should be forgotten.  Each message is limited to a maximum number of
+// addresses, which is currently 1000.  As a result, multiple messages must
+// be used to relay the full list.
+//
+// Use the AddAddress function to build up the list of known addresses when
+// sending an addr message to another peer.
+type MsgAddr struct {
+    AddrList []*NetAddress
+}
+
+// AddAddress adds a known active peer to the message.
+func (msg *MsgAddr) AddAddress(na *NetAddress) error {
+    if len(msg.AddrList)+1 > MaxAddrPerMsg {
+        str := fmt.Sprintf("too many addresses in message [max %v]",
+            MaxAddrPerMsg)
+        return messageError("MsgAddr.AddAddress", str)
+    }
+
+    msg.AddrList = append(msg.AddrList, na)
+    return nil
+}
+
+// AddAddresses adds multiple known active peers to the message.
+func (msg *MsgAddr) AddAddresses(netAddrs ...*NetAddress) error {
+    for _, na := range netAddrs {
+        err := msg.AddAddress(na)
+        if err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+// ClearAddresses removes all addresses from the message.
+func (msg *MsgAddr) ClearAddresses() {
+    msg.AddrList = []*NetAddress{}
+}
+
+// BtcDecode decodes r using the bitcoin protocol encoding into the receiver.
+// This is part of the Message interface implementation.
+func (msg *MsgAddr) BtcDecode(r io.Reader, pver uint32, enc MessageEncoding) error {
+    count, err := ReadVarInt(r, pver)
+    if err != nil {
+        return err
+    }
+
+    // Limit to max addresses per message.
+    if count > MaxAddrPerMsg {
+        str := fmt.Sprintf("too many addresses for message "+
+            "[count %v, max %v]", count, MaxAddrPerMsg)
+        return messageError("MsgAddr.BtcDecode", str)
+    }
+
+    addrList := make([]NetAddress, count)
+    msg.AddrList = make([]*NetAddress, 0, count)
+    for i := uint64(0); i < count; i++ {
+        na := &addrList[i]
+        err := readNetAddress(r, pver, na, true)
+        if err != nil {
+            return err
+        }
+        msg.AddAddress(na)
+    }
+    return nil
+}
+
+// BtcEncode encodes the receiver to w using the bitcoin protocol encoding.
+// This is part of the Message interface implementation.
+func (msg *MsgAddr) BtcEncode(w io.Writer, pver uint32, enc MessageEncoding) error {
+    // Protocol versions before MultipleAddressVersion only allowed 1 address
+    // per message.
+    count := len(msg.AddrList)
+    if pver < MultipleAddressVersion && count > 1 {
+        str := fmt.Sprintf("too many addresses for message of "+
+            "protocol version %v [count %v, max 1]", pver, count)
+        return messageError("MsgAddr.BtcEncode", str)
+
+    }
+    if count > MaxAddrPerMsg {
+        str := fmt.Sprintf("too many addresses for message "+
+            "[count %v, max %v]", count, MaxAddrPerMsg)
+        return messageError("MsgAddr.BtcEncode", str)
+    }
+
+    err := WriteVarInt(w, pver, uint64(count))
+    if err != nil {
+        return err
+    }
+
+    for _, na := range msg.AddrList {
+        err = writeNetAddress(w, pver, na, true)
+        if err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
+
+// Command returns the protocol command string for the message.  This is part
+// of the Message interface implementation.
+func (msg *MsgAddr) Command() string {
+    return CmdAddr
+}
+
+// MaxPayloadLength returns the maximum length the payload can be for the
+// receiver.  This is part of the Message interface implementation.
+func (msg *MsgAddr) MaxPayloadLength(pver uint32) uint32 {
+    if pver < MultipleAddressVersion {
+        // Num addresses (varInt) + a single net addresses.
+        return MaxVarIntPayload + maxNetAddressPayload(pver)
+    }
+
+    // Num addresses (varInt) + max allowed addresses.
+    return MaxVarIntPayload + (MaxAddrPerMsg * maxNetAddressPayload(pver))
+}
+
+// NewMsgAddr returns a new bitcoin addr message that conforms to the
+// Message interface.  See MsgAddr for details.
+func NewMsgAddr() *MsgAddr {
+    return &MsgAddr{
+        AddrList: make([]*NetAddress, 0, MaxAddrPerMsg),
+    }
+}
+```
+
+## 1.5. 心跳机制
+
+心跳机制是定时发送一个自定义的结构体(心跳包)，让对方知道自己还活着，以确保连接的有效性的机制。
+在TCP的机制里面，本身是存在有心跳包的机制的，也就是TCP的选项。系统默认是设置的是2小时的心跳频率。但是它检查不到机器断电、网线拔出、防火墙这些断线。而且逻辑层处理断线可能也不是那么好处理。一般，如果只是用于保活还是可以的。心跳包一般来说都是在逻辑层发送空的包来实现的。在长连接下，有可能很长一段时间都没有数据往来。理论上说，这个连接是一直保持连接的，但是实际情况中，如果中间节点出现什么故障是难以知道的。更要命的是，有的节点（防火墙）会自动把一定时间之内没有数据交互的连接给断掉。在这个时候，就需要我们的心跳包了，用于维持长连接，保活。
+
+在btcd中，pingHandler就是用于心跳包发送
+
+### 1.5.1. pingHandler
+
+```go
+// pingHandler periodically pings the peer.  It must be run as a goroutine.
+func (p *Peer) pingHandler() {
+    pingTicker := time.NewTicker(pingInterval)
+    defer pingTicker.Stop()
+
+out:
+    for {
+        select {
+        case <-pingTicker.C:
+            nonce, err := wire.RandomUint64()
+            if err != nil {
+                log.Errorf("Not sending ping to %s: %v", p, err)
+                continue
+            }
+            p.QueueMessage(wire.NewMsgPing(nonce), nil)
+
+        case <-p.quit:
+            break out
+        }
+    }
+}
+```
+
+### 1.5.2. 处理心跳
+
+>消息处理都在peer.inHandler中，我们看下ping的处理
+
+```go
+case *wire.MsgPing:
+    p.handlePingMsg(msg)
+    if p.cfg.Listeners.OnPing != nil {
+        p.cfg.Listeners.OnPing(p, msg)
+    }
+```
+
+>不管上层serverPeer有没有实现ping处理，在peer层都会处理，是实上上层也没有任何处理操作。
+
+```go
+// handlePingMsg is invoked when a peer receives a ping bitcoin message.  For
+// recent clients (protocol version > BIP0031Version), it replies with a pong
+// message.  For older clients, it does nothing and anything other than failure
+// is considered a successful ping.
+func (p *Peer) handlePingMsg(msg *wire.MsgPing) {
+    // Only reply with pong if the message is from a new enough client.
+    if p.ProtocolVersion() > wire.BIP0031Version {
+        // Include nonce from ping so pong can be identified.
+        p.QueueMessage(wire.NewMsgPong(msg.Nonce), nil)
+    }
+}
+```
+
+pong中回复了ping过来的Nonce。

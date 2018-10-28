@@ -22,6 +22,11 @@
     - [1.5. 心跳机制](#15-心跳机制)
         - [1.5.1. pingHandler](#151-pinghandler)
         - [1.5.2. 处理心跳](#152-处理心跳)
+    - [1.6. 消息间隔处理](#16-消息间隔处理)
+        - [1.6.1. 写stallControl](#161-写stallcontrol)
+            - [1.6.1.1. 发消息时](#1611-发消息时)
+            - [1.6.1.2. 收到消息时](#1612-收到消息时)
+        - [1.6.2. stallHandler](#162-stallhandler)
 
 <!-- /TOC -->
 
@@ -1014,6 +1019,42 @@ out:
 ```
 
 这个handler中，只要没有断开连接，会一直循环读消息，上面使用idleTimer实现了超时处理，超过5分钟没有收到消息就会调用回调方法，断开此节点的连接。跳出循环。
+每次会从节点读取一条消息，我们看看读消息方法
+
+```go
+// readMessage reads the next bitcoin message from the peer with logging.
+func (p *Peer) readMessage(encoding wire.MessageEncoding) (wire.Message, []byte, error) {
+    n, msg, buf, err := wire.ReadMessageWithEncodingN(p.conn,
+        p.ProtocolVersion(), p.cfg.ChainParams.Net, encoding)
+    atomic.AddUint64(&p.bytesReceived, uint64(n))
+    if p.cfg.Listeners.OnRead != nil {
+        p.cfg.Listeners.OnRead(p, n, msg, err)
+    }
+    if err != nil {
+        return nil, nil, err
+    }
+
+    // Use closures to log expensive operations so they are only run when
+    // the logging level requires it.
+    log.Debugf("%v", newLogClosure(func() string {
+        // Debug summary of message.
+        summary := messageSummary(msg)
+        if len(summary) > 0 {
+            summary = " (" + summary + ")"
+        }
+        return fmt.Sprintf("Received %v%s from %s",
+            msg.Command(), summary, p)
+    }))
+    log.Tracef("%v", newLogClosure(func() string {
+        return spew.Sdump(msg)
+    }))
+    log.Tracef("%v", newLogClosure(func() string {
+        return spew.Sdump(buf)
+    }))
+
+    return msg, buf, nil
+}
+```
 
 #### 1.4.3.2. 消息处理
 
@@ -1332,3 +1373,276 @@ func (p *Peer) handlePingMsg(msg *wire.MsgPing) {
 ```
 
 pong中回复了ping过来的Nonce。
+
+## 1.6. 消息间隔处理
+
+当发送一个请求消息之后，希望在一定时间之内得到回复，否则就要做相关的处理。这个功能就是在stallHandler中实现的。在前面的消息收发时，我们可以看到代码中都会有写stallControl的代码。因此，在这个stallHandler中会启15秒的stallTicker，定时去处理超时的消息，断开这个节点的连接。
+
+### 1.6.1. 写stallControl
+
+#### 1.6.1.1. 发消息时
+
+发消息时，会写一个sccSendMessage到stallControl。
+
+```go
+func (p *Peer) outHandler() {
+out:
+    for {
+        select {
+        case msg := <-p.sendQueue:
+            switch m := msg.msg.(type) {
+            case *wire.MsgPing:
+                // Only expects a pong message in later protocol
+                // versions.  Also set up statistics.
+                if p.ProtocolVersion() > wire.BIP0031Version {
+                    p.statsMtx.Lock()
+                    p.lastPingNonce = m.Nonce
+                    p.lastPingTime = time.Now()
+                    p.statsMtx.Unlock()
+                }
+            }
+
+            p.stallControl <- stallControlMsg{sccSendMessage, msg.msg}
+```
+
+#### 1.6.1.2. 收到消息时
+
+处理消息时会有三个sccReceiveMessage，sccHandlerStart和sccHandlerDone。
+
+```go
+// inHandler handles all incoming messages for the peer.  It must be run as a
+// goroutine.
+func (p *Peer) inHandler() {
+    // The timer is stopped when a new message is received and reset after it
+    // is processed.
+    idleTimer := time.AfterFunc(idleTimeout, func() {
+        log.Warnf("Peer %s no answer for %s -- disconnecting", p, idleTimeout)
+        p.Disconnect()
+    })
+
+    out:
+    for atomic.LoadInt32(&p.disconnect) == 0 {
+        // Read a message and stop the idle timer as soon as the read
+        // is done.  The timer is reset below for the next iteration if
+        // needed.
+        rmsg, buf, err := p.readMessage(p.wireEncoding)
+        idleTimer.Stop()
+        ...
+        atomic.StoreInt64(&p.lastRecv, time.Now().Unix())
+
+        p.stallControl <- stallControlMsg{sccReceiveMessage, rmsg}
+
+        // Handle each supported message type.
+        p.stallControl <- stallControlMsg{sccHandlerStart, rmsg}
+
+        switch msg := rmsg.(type) {
+        ...
+        }
+        p.stallControl <- stallControlMsg{sccHandlerDone, rmsg}
+    }
+}
+```
+
+从A节点出发 ，当它向B节点发送一个消息之前 ，会写sccSendMessage到stallControl。当B节点回复一个消息，进入A的inHandler之后，会把sccReceiveMessage和sccHandlerStart写到stallControl，当处理完成之后，会把sccHandlerDone写到stallControl，完成一个闭环。如果没有收到对应的消息回复，stallHandler中就可以检测出来。
+
+### 1.6.2. stallHandler
+
+
+```go
+// stallHandler handles stall detection for the peer.  This entails keeping
+// track of expected responses and assigning them deadlines while accounting for
+// the time spent in callbacks.  It must be run as a goroutine.
+func (p *Peer) stallHandler() {
+    // These variables are used to adjust the deadline times forward by the
+    // time it takes callbacks to execute.  This is done because new
+    // messages aren't read until the previous one is finished processing
+    // (which includes callbacks), so the deadline for receiving a response
+    // for a given message must account for the processing time as well.
+    var handlerActive bool
+    var handlersStartTime time.Time
+    var deadlineOffset time.Duration
+
+    // pendingResponses tracks the expected response deadline times.
+    pendingResponses := make(map[string]time.Time)
+
+    // stallTicker is used to periodically check pending responses that have
+    // exceeded the expected deadline and disconnect the peer due to
+    // stalling.
+    stallTicker := time.NewTicker(stallTickInterval)
+    defer stallTicker.Stop()
+
+    // ioStopped is used to detect when both the input and output handler
+    // goroutines are done.
+    var ioStopped bool
+out:
+    for {
+        select {
+        case msg := <-p.stallControl:
+            switch msg.command {
+            case sccSendMessage:
+                // Add a deadline for the expected response
+                // message if needed.
+                p.maybeAddDeadline(pendingResponses,
+                    msg.message.Command())
+
+            case sccReceiveMessage:
+                // Remove received messages from the expected
+                // response map.  Since certain commands expect
+                // one of a group of responses, remove
+                // everything in the expected group accordingly.
+                switch msgCmd := msg.message.Command(); msgCmd {
+                case wire.CmdBlock:
+                    fallthrough
+                case wire.CmdMerkleBlock:
+                    fallthrough
+                case wire.CmdTx:
+                    fallthrough
+                case wire.CmdNotFound:
+                    delete(pendingResponses, wire.CmdBlock)
+                    delete(pendingResponses, wire.CmdMerkleBlock)
+                    delete(pendingResponses, wire.CmdTx)
+                    delete(pendingResponses, wire.CmdNotFound)
+
+                default:
+                    delete(pendingResponses, msgCmd)
+                }
+
+            case sccHandlerStart:
+                // Warn on unbalanced callback signalling.
+                if handlerActive {
+                    log.Warn("Received handler start " +
+                        "control command while a " +
+                        "handler is already active")
+                    continue
+                }
+
+                handlerActive = true
+                handlersStartTime = time.Now()
+
+            case sccHandlerDone:
+                // Warn on unbalanced callback signalling.
+                if !handlerActive {
+                    log.Warn("Received handler done " +
+                        "control command when a " +
+                        "handler is not already active")
+                    continue
+                }
+
+                // Extend active deadlines by the time it took
+                // to execute the callback.
+                duration := time.Since(handlersStartTime)
+                deadlineOffset += duration
+                handlerActive = false
+
+            default:
+                log.Warnf("Unsupported message command %v",
+                    msg.command)
+            }
+
+        case <-stallTicker.C:
+            // Calculate the offset to apply to the deadline based
+            // on how long the handlers have taken to execute since
+            // the last tick.
+            now := time.Now()
+            offset := deadlineOffset
+            if handlerActive {
+                offset += now.Sub(handlersStartTime)
+            }
+
+            // Disconnect the peer if any of the pending responses
+            // don't arrive by their adjusted deadline.
+            for command, deadline := range pendingResponses {
+                if now.Before(deadline.Add(offset)) {
+                    continue
+                }
+
+                log.Debugf("Peer %s appears to be stalled or "+
+                    "misbehaving, %s timeout -- "+
+                    "disconnecting", p, command)
+                p.Disconnect()
+                break
+            }
+
+            // Reset the deadline offset for the next tick.
+            deadlineOffset = 0
+
+        case <-p.inQuit:
+            // The stall handler can exit once both the input and
+            // output handler goroutines are done.
+            if ioStopped {
+                break out
+            }
+            ioStopped = true
+
+        case <-p.outQuit:
+            // The stall handler can exit once both the input and
+            // output handler goroutines are done.
+            if ioStopped {
+                break out
+            }
+            ioStopped = true
+        }
+    }
+
+    // Drain any wait channels before going away so there is nothing left
+    // waiting on this goroutine.
+cleanup:
+    for {
+        select {
+        case <-p.stallControl:
+        default:
+            break cleanup
+        }
+    }
+    log.Tracef("Peer stall handler done for %s", p)
+}
+```
+
+1. 当收到sccSendMessage时，说明发送了一条消息，这时要记录到pendingResponses中。key为command, value为时间。其中不同的命令，处理的时间不同，因此，长时间处理的命令要加长超时时间。见下面的maybeAddDeadline()
+2. 当收到sccReceiveMessage时，说明消息已经收到，这里就可以删除pendingResponses中对应的命令。
+
+>**由于当前节点可能会在发送消息之后，收到消息处理回复之前，会有其它节点请求处理，影响了消息的回复时间间隔。因此，在sccHandlerStart和sccHandlerDone中会计算时间偏移量。最后在stallTicker处理时，deadline.Add(offset)。**
+
+>maybeAddDeadline()
+
+```go
+// maybeAddDeadline potentially adds a deadline for the appropriate expected
+// response for the passed wire protocol command to the pending responses map.
+func (p *Peer) maybeAddDeadline(pendingResponses map[string]time.Time, msgCmd string) {
+    // Setup a deadline for each message being sent that expects a response.
+    //
+    // NOTE: Pings are intentionally ignored here since they are typically
+    // sent asynchronously and as a result of a long backlock of messages,
+    // such as is typical in the case of initial block download, the
+    // response won't be received in time.
+    deadline := time.Now().Add(stallResponseTimeout)
+    switch msgCmd {
+    case wire.CmdVersion:
+        // Expects a verack message.
+        pendingResponses[wire.CmdVerAck] = deadline
+
+    case wire.CmdMemPool:
+        // Expects an inv message.
+        pendingResponses[wire.CmdInv] = deadline
+
+    case wire.CmdGetBlocks:
+        // Expects an inv message.
+        pendingResponses[wire.CmdInv] = deadline
+
+    case wire.CmdGetData:
+        // Expects a block, merkleblock, tx, or notfound message.
+        pendingResponses[wire.CmdBlock] = deadline
+        pendingResponses[wire.CmdMerkleBlock] = deadline
+        pendingResponses[wire.CmdTx] = deadline
+        pendingResponses[wire.CmdNotFound] = deadline
+
+    case wire.CmdGetHeaders:
+        // Expects a headers message.  Use a longer deadline since it
+        // can take a while for the remote peer to load all of the
+        // headers.
+        deadline = time.Now().Add(stallResponseTimeout * 3)
+        pendingResponses[wire.CmdHeaders] = deadline
+    }
+}
+```
+

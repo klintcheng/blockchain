@@ -1443,10 +1443,9 @@ func (p *Peer) inHandler() {
 }
 ```
 
-从A节点出发 ，当它向B节点发送一个消息之前 ，会写sccSendMessage到stallControl。当B节点回复一个消息，进入A的inHandler之后，会把sccReceiveMessage和sccHandlerStart写到stallControl，当处理完成之后，会把sccHandlerDone写到stallControl，完成一个闭环。如果没有收到对应的消息回复，stallHandler中就可以检测出来。
-
 ### 1.6.2. stallHandler
 
+从A节点出发 ，当它向B节点发送一个消息之前 ，会写sccSendMessage到stallControl。当B节点回复一个消息，进入A的inHandler之后，会把sccReceiveMessage和sccHandlerStart写到stallControl，当处理完成之后，会把sccHandlerDone写到stallControl，完成一个闭环。如果没有收到对应的消息回复，stallHandler中就可以检测出来。
 
 ```go
 // stallHandler handles stall detection for the peer.  This entails keeping

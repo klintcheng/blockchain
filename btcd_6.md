@@ -1445,7 +1445,7 @@ func (p *Peer) inHandler() {
 
 ### 1.6.2. stallHandler
 
-从A节点出发 ，当它向B节点发送一个消息之前 ，会写sccSendMessage到stallControl。当B节点回复一个消息，进入A的inHandler之后，会把sccReceiveMessage和sccHandlerStart写到stallControl，当处理完成之后，会把sccHandlerDone写到stallControl，完成一个闭环。如果没有收到对应的消息回复，stallHandler中就可以检测出来。
+从A节点出发 ，当它向B节点发送一个消息之前 ，会写sccSendMessage到stallControl。当B节点回复一个消息，进入A的inHandler之后，会把sccReceiveMessage和sccHandlerStart写到stallControl，当处理完成之后，会把sccHandlerDone写到stallControl。如果没有收到对应的消息回复，stallHandler中就可以检测出来。
 
 ```go
 // stallHandler handles stall detection for the peer.  This entails keeping
@@ -1600,7 +1600,7 @@ cleanup:
 1. 当收到sccSendMessage时，说明发送了一条消息，这时要记录到pendingResponses中。key为command, value为时间。其中不同的命令，处理的时间不同，因此，长时间处理的命令要加长超时时间。见下面的maybeAddDeadline()
 2. 当收到sccReceiveMessage时，说明消息已经收到，这里就可以删除pendingResponses中对应的命令。
 
->**由于当前节点可能会在发送消息之后，收到消息处理回复之前，会有其它节点请求处理，影响了消息的回复时间间隔。因此，在sccHandlerStart和sccHandlerDone中会计算时间偏移量。最后在stallTicker处理时，deadline.Add(offset)。**
+>**由于当前节点可能会在发送消息之后，收到消息处理回复之前，会有其它请求处理，影响了消息的回复时间间隔。因此，在sccHandlerStart和sccHandlerDone中会计算时间偏移量。最后在stallTicker处理时，deadline.Add(offset)。**
 
 >maybeAddDeadline()
 

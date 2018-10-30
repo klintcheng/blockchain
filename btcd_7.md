@@ -5,7 +5,6 @@
     - [1.1. 介绍](#11-介绍)
     - [1.2. 启动过程](#12-启动过程)
         - [1.2.1. blockHandler](#121-blockhandler)
-        - [1.2.2. 订阅通知](#122-订阅通知)
     - [1.3. 同步区块](#13-同步区块)
         - [1.3.1. 触发同步](#131-触发同步)
         - [1.3.2. 开始同步](#132-开始同步)
@@ -14,8 +13,17 @@
             - [1.3.2.3. 请求区块](#1323-请求区块)
             - [1.3.2.4. 接收区块](#1324-接收区块)
             - [1.3.2.5. 处理收到的区块](#1325-处理收到的区块)
-        - [MsgGetHeaders处理](#msggetheaders处理)
-    - [1.4. NotFound处理](#14-notfound处理)
+        - [1.3.3. MsgGetHeaders处理](#133-msggetheaders处理)
+            - [1.3.3.1. LocateHeaders](#1331-locateheaders)
+        - [1.3.4. MsgGetData请求处理](#134-msggetdata请求处理)
+            - [1.3.4.1. FetchBlock](#1341-fetchblock)
+    - [1.4. 数据传播](#14-数据传播)
+        - [1.4.1. 订阅通知](#141-订阅通知)
+        - [1.4.2. 通知处理](#142-通知处理)
+            - [1.4.2.1. peerNotifier实现](#1421-peernotifier实现)
+        - [1.4.3. RelayInventory](#143-relayinventory)
+            - [1.4.3.1. handleRelayInvMsg](#1431-handlerelayinvmsg)
+            - [1.4.3.2. OnInv](#1432-oninv)
 
 <!-- /TOC -->
 ## 1.1. 介绍
@@ -228,108 +236,6 @@ out:
 
     sm.wg.Done()
     log.Trace("Block handler done")
-}
-```
-
-### 1.2.2. 订阅通知
-
-在上面的New()方法中，我们看到了Sync会调用接口，订阅通知。
-
-```go
-sm.chain.Subscribe(sm.handleBlockchainNotification)
-```
-
-进入这个方法，看下它做了什么事。
-
-```go
-// handleBlockchainNotification handles notifications from blockchain.  It does
-// things such as request orphan block parents and relay accepted blocks to
-// connected peers.
-func (sm *SyncManager) handleBlockchainNotification(notification *blockchain.Notification) {
-    switch notification.Type {
-    // A block has been accepted into the block chain.  Relay it to other
-    // peers.
-    case blockchain.NTBlockAccepted:
-        // Don't relay if we are not current. Other peers that are
-        // current should already know about it.
-        if !sm.current() {
-            return
-        }
-
-        block, ok := notification.Data.(*btcutil.Block)
-        if !ok {
-            log.Warnf("Chain accepted notification is not a block.")
-            break
-        }
-
-        // Generate the inventory vector and relay it.
-        iv := wire.NewInvVect(wire.InvTypeBlock, block.Hash())
-        sm.peerNotifier.RelayInventory(iv, block.MsgBlock().Header)
-
-    // A block has been connected to the main block chain.
-    case blockchain.NTBlockConnected:
-        block, ok := notification.Data.(*btcutil.Block)
-        if !ok {
-            log.Warnf("Chain connected notification is not a block.")
-            break
-        }
-
-        // Remove all of the transactions (except the coinbase) in the
-        // connected block from the transaction pool.  Secondly, remove any
-        // transactions which are now double spends as a result of these
-        // new transactions.  Finally, remove any transaction that is
-        // no longer an orphan. Transactions which depend on a confirmed
-        // transaction are NOT removed recursively because they are still
-        // valid.
-        for _, tx := range block.Transactions()[1:] {
-            sm.txMemPool.RemoveTransaction(tx, false)
-            sm.txMemPool.RemoveDoubleSpends(tx)
-            sm.txMemPool.RemoveOrphan(tx)
-            sm.peerNotifier.TransactionConfirmed(tx)
-            acceptedTxs := sm.txMemPool.ProcessOrphans(tx)
-            sm.peerNotifier.AnnounceNewTransactions(acceptedTxs)
-        }
-
-        // Register block with the fee estimator, if it exists.
-        if sm.feeEstimator != nil {
-            err := sm.feeEstimator.RegisterBlock(block)
-
-            // If an error is somehow generated then the fee estimator
-            // has entered an invalid state. Since it doesn't know how
-            // to recover, create a new one.
-            if err != nil {
-                sm.feeEstimator = mempool.NewFeeEstimator(
-                    mempool.DefaultEstimateFeeMaxRollback,
-                    mempool.DefaultEstimateFeeMinRegisteredBlocks)
-            }
-        }
-
-    // A block has been disconnected from the main block chain.
-    case blockchain.NTBlockDisconnected:
-        block, ok := notification.Data.(*btcutil.Block)
-        if !ok {
-            log.Warnf("Chain disconnected notification is not a block.")
-            break
-        }
-
-        // Reinsert all of the transactions (except the coinbase) into
-        // the transaction pool.
-        for _, tx := range block.Transactions()[1:] {
-            _, _, err := sm.txMemPool.MaybeAcceptTransaction(tx,
-                false, false)
-            if err != nil {
-                // Remove the transaction and all transactions
-                // that depend on it if it wasn't accepted into
-                // the transaction pool.
-                sm.txMemPool.RemoveTransaction(tx, true)
-            }
-        }
-
-        // Rollback previous block recorded by the fee estimator.
-        if sm.feeEstimator != nil {
-            sm.feeEstimator.Rollback(block.Hash())
-        }
-    }
 }
 ```
 
@@ -1178,7 +1084,7 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 8. 如果到了CheckpointBlock，就得到下一个CheckpointBlock。如果这个CheckpointBlock存在，说明同步还没有完成。此时会调用GetHeaders消息继续。
 9. 最后，没有nextCheckpoint之后设置headersFirstMode=false.直接调用PushGetBlocksMsg请求同步到最新的区块（设置第二个参数为zeroHash）。
 
-### MsgGetHeaders处理
+### 1.3.3. MsgGetHeaders处理
 
 当一个节点收到其它节点的MsgGetHeaders请求时，它会从自己的本地读取区块头节点返回。
 
@@ -1213,7 +1119,7 @@ func (sp *serverPeer) OnGetHeaders(_ *peer.Peer, msg *wire.MsgGetHeaders) {
 }
 ```
 
->**LocateHeaders**
+#### 1.3.3.1. LocateHeaders
 
 ```go
 // LocateHeaders returns the headers of the blocks after the first known block
@@ -1263,8 +1169,10 @@ func (b *BlockChain) locateHeaders(locator BlockLocator, hashStop *chainhash.Has
 }
 ```
 
-
 >1. locateInventory 用于从blockIndex中读取locator中的启初节点和节点总数
+>2. bestChain结构为chainView，chainView是维护在内存中的对象，方便对链中节点各种处理。b.bestChain.Next(node)读取下一个节点。
+
+>locateInventory
 
 ```go
 // locateInventory returns the node of the block after the first known block in
@@ -1331,8 +1239,7 @@ func (b *BlockChain) locateInventory(locator BlockLocator, hashStop *chainhash.H
 }
 ```
 
-
->2. bestChain结构为chainView，chainView是维护在内存中的对象，方便对链中节点各种处理。
+> chainView结构：
 
 ```go
 // chainView provides a flat view of a specific branch of the block chain from
@@ -1367,7 +1274,898 @@ func (c *chainView) nodeByHeight(height int32) *blockNode {
 }
 ```
 
-## 1.4. NotFound处理
+### 1.3.4. MsgGetData请求处理
 
-当请求下载的节点没有个别区块时，它会返回MsgNotFound，并且把没的有区块清单返回。我们回到OnNotFound看看，没有的情况它是如果处理的。
+OnGetData是个复合的接口，可以处理各种InvType类型的请求。
 
+```go
+
+// InvType represents the allowed types of inventory vectors.  See InvVect.
+type InvType uint32
+
+// These constants define the various supported inventory vector types.
+const (
+    InvTypeError                InvType = 0
+    InvTypeTx                   InvType = 1
+    InvTypeBlock                InvType = 2
+    InvTypeFilteredBlock        InvType = 3
+    InvTypeWitnessBlock         InvType = InvTypeBlock | InvWitnessFlag
+    InvTypeWitnessTx            InvType = InvTypeTx | InvWitnessFlag
+    InvTypeFilteredWitnessBlock InvType = InvTypeFilteredBlock | InvWitnessFlag
+)
+```
+
+>OnGetData
+
+```go
+// handleGetData is invoked when a peer receives a getdata bitcoin message and
+// is used to deliver block and transaction information.
+func (sp *serverPeer) OnGetData(_ *peer.Peer, msg *wire.MsgGetData) {
+    numAdded := 0
+    notFound := wire.NewMsgNotFound()
+
+    length := len(msg.InvList)
+    // A decaying ban score increase is applied to prevent exhausting resources
+    // with unusually large inventory queries.
+    // Requesting more than the maximum inventory vector length within a short
+    // period of time yields a score above the default ban threshold. Sustained
+    // bursts of small requests are not penalized as that would potentially ban
+    // peers performing IBD.
+    // This incremental score decays each minute to half of its value.
+    sp.addBanScore(0, uint32(length)*99/wire.MaxInvPerMsg, "getdata")
+
+    // We wait on this wait channel periodically to prevent queuing
+    // far more data than we can send in a reasonable time, wasting memory.
+    // The waiting occurs after the database fetch for the next one to
+    // provide a little pipelining.
+    var waitChan chan struct{}
+    doneChan := make(chan struct{}, 1)
+
+    for i, iv := range msg.InvList {
+        var c chan struct{}
+        // If this will be the last message we send.
+        if i == length-1 && len(notFound.InvList) == 0 {
+            c = doneChan
+        } else if (i+1)%3 == 0 {
+            // Buffered so as to not make the send goroutine block.
+            c = make(chan struct{}, 1)
+        }
+        var err error
+        switch iv.Type {
+        case wire.InvTypeWitnessTx:
+            err = sp.server.pushTxMsg(sp, &iv.Hash, c, waitChan, wire.WitnessEncoding)
+        case wire.InvTypeTx:
+            err = sp.server.pushTxMsg(sp, &iv.Hash, c, waitChan, wire.BaseEncoding)
+        case wire.InvTypeWitnessBlock:
+            err = sp.server.pushBlockMsg(sp, &iv.Hash, c, waitChan, wire.WitnessEncoding)
+        case wire.InvTypeBlock:
+            err = sp.server.pushBlockMsg(sp, &iv.Hash, c, waitChan, wire.BaseEncoding)
+        case wire.InvTypeFilteredWitnessBlock:
+            err = sp.server.pushMerkleBlockMsg(sp, &iv.Hash, c, waitChan, wire.WitnessEncoding)
+        case wire.InvTypeFilteredBlock:
+            err = sp.server.pushMerkleBlockMsg(sp, &iv.Hash, c, waitChan, wire.BaseEncoding)
+        default:
+            peerLog.Warnf("Unknown type in inventory request %d",
+                iv.Type)
+            continue
+        }
+        if err != nil {
+            notFound.AddInvVect(iv)
+
+            // When there is a failure fetching the final entry
+            // and the done channel was sent in due to there
+            // being no outstanding not found inventory, consume
+            // it here because there is now not found inventory
+            // that will use the channel momentarily.
+            if i == len(msg.InvList)-1 && c != nil {
+                <-c
+            }
+        }
+        numAdded++
+        waitChan = c
+    }
+    if len(notFound.InvList) != 0 {
+        sp.QueueMessage(notFound, doneChan)
+    }
+
+    // Wait for messages to be sent. We can send quite a lot of data at this
+    // point and this will keep the peer busy for a decent amount of time.
+    // We don't process anything else by them in this time so that we
+    // have an idea of when we should hear back from them - else the idle
+    // timeout could fire when we were only half done sending the blocks.
+    if numAdded > 0 {
+        <-doneChan
+    }
+}
+```
+
+这个方法在上面提过。我们主要看下pushBlockMsg方法中的处理。其它的InvType先不管。
+
+```go
+// pushBlockMsg sends a block message for the provided block hash to the
+// connected peer.  An error is returned if the block hash is not known.
+func (s *server) pushBlockMsg(sp *serverPeer, hash *chainhash.Hash, doneChan chan<- struct{},
+    waitChan <-chan struct{}, encoding wire.MessageEncoding) error {
+
+    // Fetch the raw block bytes from the database.
+    var blockBytes []byte
+    err := sp.server.db.View(func(dbTx database.Tx) error {
+        var err error
+        blockBytes, err = dbTx.FetchBlock(hash)
+        return err
+    })
+    if err != nil {
+        peerLog.Tracef("Unable to fetch requested block hash %v: %v",
+            hash, err)
+
+        if doneChan != nil {
+            doneChan <- struct{}{}
+        }
+        return err
+    }
+
+    // Deserialize the block.
+    var msgBlock wire.MsgBlock
+    err = msgBlock.Deserialize(bytes.NewReader(blockBytes))
+    if err != nil {
+        peerLog.Tracef("Unable to deserialize requested block hash "+
+            "%v: %v", hash, err)
+
+        if doneChan != nil {
+            doneChan <- struct{}{}
+        }
+        return err
+    }
+
+    // Once we have fetched data wait for any previous operation to finish.
+    if waitChan != nil {
+        <-waitChan
+    }
+
+    // We only send the channel for this message if we aren't sending
+    // an inv straight after.
+    var dc chan<- struct{}
+    continueHash := sp.continueHash
+    sendInv := continueHash != nil && continueHash.IsEqual(hash)
+    if !sendInv {
+        dc = doneChan
+    }
+    sp.QueueMessageWithEncoding(&msgBlock, dc, encoding)
+
+    // When the peer requests the final block that was advertised in
+    // response to a getblocks message which requested more blocks than
+    // would fit into a single message, send it a new inventory message
+    // to trigger it to issue another getblocks message for the next
+    // batch of inventory.
+    if sendInv {
+        best := sp.server.chain.BestSnapshot()
+        invMsg := wire.NewMsgInvSizeHint(1)
+        iv := wire.NewInvVect(wire.InvTypeBlock, &best.Hash)
+        invMsg.AddInvVect(iv)
+        sp.QueueMessage(invMsg, doneChan)
+        sp.continueHash = nil
+    }
+    return nil
+}
+```
+
+1. 读取block数据并反序列化为msgBlock对象
+2. 发送消息
+
+在第一次调用此方法时，waitChan为空，doneChan也就是外层OnGetData的c，然后这个c会被传入消息发送方法QueueMessageWithEncoding中，只有消息发送完成才会向这个通道写通知，当这个方法调用返回之后，waitChan=c.也就是说当第二次进入这个方法时，如果第一个消息还没有发送完成，在这时<-waitChan会阻塞。如此依次串行。直到最后OnGetData循环完成，c = doneChan，最后一条消息发送完成结束。
+**continueHash是在OnGetBlocks处理的。为了分批回复invMsg，所以在最后才会有那段代码，这里可以认为它为false。**
+
+#### 1.3.4.1. FetchBlock
+
+```go
+// FetchBlock returns the raw serialized bytes for the block identified by the
+// given hash.  The raw bytes are in the format returned by Serialize on a
+// wire.MsgBlock.
+//
+// Returns the following errors as required by the interface contract:
+//   - ErrBlockNotFound if the requested block hash does not exist
+//   - ErrTxClosed if the transaction has already been closed
+//   - ErrCorruption if the database has somehow become corrupted
+//
+// In addition, returns ErrDriverSpecific if any failures occur when reading the
+// block files.
+//
+// NOTE: The data returned by this function is only valid during a database
+// transaction.  Attempting to access it after a transaction has ended results
+// in undefined behavior.  This constraint prevents additional data copies and
+// allows support for memory-mapped database implementations.
+//
+// This function is part of the database.Tx interface implementation.
+func (tx *transaction) FetchBlock(hash *chainhash.Hash) ([]byte, error) {
+    // Ensure transaction state is valid.
+    if err := tx.checkClosed(); err != nil {
+        return nil, err
+    }
+
+    // When the block is pending to be written on commit return the bytes
+    // from there.
+    if idx, exists := tx.pendingBlocks[*hash]; exists {
+        return tx.pendingBlockData[idx].bytes, nil
+    }
+
+    // Lookup the location of the block in the files from the block index.
+    blockRow, err := tx.fetchBlockRow(hash)
+    if err != nil {
+        return nil, err
+    }
+    location := deserializeBlockLoc(blockRow)
+
+    // Read the block from the appropriate location.  The function also
+    // performs a checksum over the data to detect data corruption.
+    blockBytes, err := tx.db.store.readBlock(hash, location)
+    if err != nil {
+        return nil, err
+    }
+
+    return blockBytes, nil
+}
+```
+
+> 1. 调用fetchBlockRow从blockIdxBucket中读取blockLocation
+> 2. 调用store.readBlock从文件中读取区块数据
+
+## 1.4. 数据传播
+
+同步管理器还有一个重要的功能就是数据的转发。比如收到一个新生成的区块时，它会广播给其它节点。
+
+### 1.4.1. 订阅通知
+
+在New一个SyncManager的方法中，我们看到了会调用接口，订阅通知。
+
+```go
+sm.chain.Subscribe(sm.handleBlockchainNotification)
+```
+
+进入这个方法，看下它做了什么事。
+
+```go
+// handleBlockchainNotification handles notifications from blockchain.  It does
+// things such as request orphan block parents and relay accepted blocks to
+// connected peers.
+func (sm *SyncManager) handleBlockchainNotification(notification *blockchain.Notification) {
+    switch notification.Type {
+    // A block has been accepted into the block chain.  Relay it to other
+    // peers.
+    case blockchain.NTBlockAccepted:
+        // Don't relay if we are not current. Other peers that are
+        // current should already know about it.
+        if !sm.current() {
+            return
+        }
+
+        block, ok := notification.Data.(*btcutil.Block)
+        if !ok {
+            log.Warnf("Chain accepted notification is not a block.")
+            break
+        }
+
+        // Generate the inventory vector and relay it.
+        iv := wire.NewInvVect(wire.InvTypeBlock, block.Hash())
+        sm.peerNotifier.RelayInventory(iv, block.MsgBlock().Header)
+
+    // A block has been connected to the main block chain.
+    case blockchain.NTBlockConnected:
+        block, ok := notification.Data.(*btcutil.Block)
+        if !ok {
+            log.Warnf("Chain connected notification is not a block.")
+            break
+        }
+
+        // Remove all of the transactions (except the coinbase) in the
+        // connected block from the transaction pool.  Secondly, remove any
+        // transactions which are now double spends as a result of these
+        // new transactions.  Finally, remove any transaction that is
+        // no longer an orphan. Transactions which depend on a confirmed
+        // transaction are NOT removed recursively because they are still
+        // valid.
+        for _, tx := range block.Transactions()[1:] {
+            sm.txMemPool.RemoveTransaction(tx, false)
+            sm.txMemPool.RemoveDoubleSpends(tx)
+            sm.txMemPool.RemoveOrphan(tx)
+            sm.peerNotifier.TransactionConfirmed(tx)
+            acceptedTxs := sm.txMemPool.ProcessOrphans(tx)
+            sm.peerNotifier.AnnounceNewTransactions(acceptedTxs)
+        }
+
+        // Register block with the fee estimator, if it exists.
+        if sm.feeEstimator != nil {
+            err := sm.feeEstimator.RegisterBlock(block)
+
+            // If an error is somehow generated then the fee estimator
+            // has entered an invalid state. Since it doesn't know how
+            // to recover, create a new one.
+            if err != nil {
+                sm.feeEstimator = mempool.NewFeeEstimator(
+                    mempool.DefaultEstimateFeeMaxRollback,
+                    mempool.DefaultEstimateFeeMinRegisteredBlocks)
+            }
+        }
+
+    // A block has been disconnected from the main block chain.
+    case blockchain.NTBlockDisconnected:
+        block, ok := notification.Data.(*btcutil.Block)
+        if !ok {
+            log.Warnf("Chain disconnected notification is not a block.")
+            break
+        }
+
+        // Reinsert all of the transactions (except the coinbase) into
+        // the transaction pool.
+        for _, tx := range block.Transactions()[1:] {
+            _, _, err := sm.txMemPool.MaybeAcceptTransaction(tx,
+                false, false)
+            if err != nil {
+                // Remove the transaction and all transactions
+                // that depend on it if it wasn't accepted into
+                // the transaction pool.
+                sm.txMemPool.RemoveTransaction(tx, true)
+            }
+        }
+
+        // Rollback previous block recorded by the fee estimator.
+        if sm.feeEstimator != nil {
+            sm.feeEstimator.Rollback(block.Hash())
+        }
+    }
+}
+```
+
+>看下三种类型的区别：
+
+```go
+// Constants for the type of a notification message.
+const (
+    // NTBlockAccepted indicates the associated block was accepted into
+    // the block chain.  Note that this does not necessarily mean it was
+    // added to the main chain.  For that, use NTBlockConnected.
+    NTBlockAccepted NotificationType = iota
+
+    // NTBlockConnected indicates the associated block was connected to the
+    // main chain.
+    NTBlockConnected
+
+    // NTBlockDisconnected indicates the associated block was disconnected
+    // from the main chain.
+    NTBlockDisconnected
+)
+```
+
+>- NTBlockAccepted是在BlockChain->maybeAcceptBlock方法中调用的，我们看下它的说明：  
+**potentially accepts a block into the block chain and, if accepted, returns whether or not it is on the main chain.**
+>- NTBlockConnected是BlockChain->connectBlock方法中调用的，我们看下它的说明：  
+**handles connecting the passed node/block to the end of the main (best) chain.**
+
+### 1.4.2. 通知处理
+
+在同步管理器中，它会做一些处理操作，然后把消息传播出去。调用的就是peerNotifier。
+
+>其中PeerNotifier这个接口有四个方法：
+
+```go
+// PeerNotifier exposes methods to notify peers of status changes to
+// transactions, blocks, etc. Currently server (in the main package) implements
+// this interface.
+type PeerNotifier interface {
+    AnnounceNewTransactions(newTxs []*mempool.TxDesc)
+
+    UpdatePeerHeights(latestBlkHash *chainhash.Hash, latestHeight int32, updateSource *peer.Peer)
+
+    RelayInventory(invVect *wire.InvVect, data interface{})
+
+    TransactionConfirmed(tx *btcutil.Tx)
+}
+```
+
+因为在创建SyncManager时，server把自己当为这个参数传入过来。所以这些接口的实现都在server中。
+
+#### 1.4.2.1. peerNotifier实现
+
+```go
+// RelayInventory relays the passed inventory vector to all connected peers
+// that are not already known to have it.
+func (s *server) RelayInventory(invVect *wire.InvVect, data interface{}) {
+    s.relayInv <- relayMsg{invVect: invVect, data: data}
+}
+
+// relayTransactions generates and relays inventory vectors for all of the
+// passed transactions to all connected peers.
+func (s *server) relayTransactions(txns []*mempool.TxDesc) {
+    for _, txD := range txns {
+        iv := wire.NewInvVect(wire.InvTypeTx, txD.Tx.Hash())
+        s.RelayInventory(iv, txD)
+    }
+}
+
+// AnnounceNewTransactions generates and relays inventory vectors and notifies
+// both websocket and getblocktemplate long poll clients of the passed
+// transactions.  This function should be called whenever new transactions
+// are added to the mempool.
+func (s *server) AnnounceNewTransactions(txns []*mempool.TxDesc) {
+    // Generate and relay inventory vectors for all newly accepted
+    // transactions.
+    s.relayTransactions(txns)
+
+    // Notify both websocket and getblocktemplate long poll clients of all
+    // newly accepted transactions.
+    if s.rpcServer != nil {
+        s.rpcServer.NotifyNewTransactions(txns)
+    }
+}
+
+// Transaction has one confirmation on the main chain. Now we can mark it as no
+// longer needing rebroadcasting.
+func (s *server) TransactionConfirmed(tx *btcutil.Tx) {
+    // Rebroadcasting is only necessary when the RPC server is active.
+    if s.rpcServer == nil {
+        return
+    }
+
+    iv := wire.NewInvVect(wire.InvTypeTx, tx.Hash())
+    s.RemoveRebroadcastInventory(iv)
+}
+```
+
+### 1.4.3. RelayInventory
+
+不管是区块。还是新交易，都会调用到RelayInventory。比如钱包给rpcServer发了一条交易，rpc服务会调用AnnounceNewTransactions。
+
+>**节点层级的处理都在server.peerHandler中；**
+
+```go
+func (s *server) peerHandler() {
+    ...
+    // New inventory to potentially be relayed to other peers.
+    case invMsg := <-s.relayInv:
+        s.handleRelayInvMsg(state, invMsg)
+    ...
+}
+```
+
+#### 1.4.3.1. handleRelayInvMsg
+
+```go
+// handleRelayInvMsg deals with relaying inventory to peers that are not already
+// known to have it.  It is invoked from the peerHandler goroutine.
+func (s *server) handleRelayInvMsg(state *peerState, msg relayMsg) {
+    state.forAllPeers(func(sp *serverPeer) {
+        if !sp.Connected() {
+            return
+        }
+
+        // If the inventory is a block and the peer prefers headers,
+        // generate and send a headers message instead of an inventory
+        // message.
+        if msg.invVect.Type == wire.InvTypeBlock && sp.WantsHeaders() {
+            blockHeader, ok := msg.data.(wire.BlockHeader)
+            if !ok {
+                peerLog.Warnf("Underlying data for headers" +
+                    " is not a block header")
+                return
+            }
+            msgHeaders := wire.NewMsgHeaders()
+            if err := msgHeaders.AddBlockHeader(&blockHeader); err != nil {
+                peerLog.Errorf("Failed to add block"+
+                    " header: %v", err)
+                return
+            }
+            sp.QueueMessage(msgHeaders, nil)
+            return
+        }
+
+        if msg.invVect.Type == wire.InvTypeTx {
+            // Don't relay the transaction to the peer when it has
+            // transaction relaying disabled.
+            if sp.relayTxDisabled() {
+                return
+            }
+
+            txD, ok := msg.data.(*mempool.TxDesc)
+            if !ok {
+                peerLog.Warnf("Underlying data for tx inv "+
+                    "relay is not a *mempool.TxDesc: %T",
+                    msg.data)
+                return
+            }
+
+            // Don't relay the transaction if the transaction fee-per-kb
+            // is less than the peer's feefilter.
+            feeFilter := atomic.LoadInt64(&sp.feeFilter)
+            if feeFilter > 0 && txD.FeePerKB < feeFilter {
+                return
+            }
+
+            // Don't relay the transaction if there is a bloom
+            // filter loaded and the transaction doesn't match it.
+            if sp.filter.IsLoaded() {
+                if !sp.filter.MatchTxAndUpdate(txD.Tx) {
+                    return
+                }
+            }
+        }
+
+        // Queue the inventory to be relayed with the next batch.
+        // It will be ignored if the peer is already known to
+        // have the inventory.
+        sp.QueueInventory(msg.invVect)
+    })
+}
+```
+
+这个方法会取出所有的节点(进来或者出去的)。
+- 如果是区块，并且WantsHeaders，就发送MsgHeaders给对方。前面已经分析过，如果收到这个消息，它没有库存，就会调用GetData去取区块数据。
+- 如果是交易，会做些基本的判断。最后一个会有bloom filter的处理，这里先不管。
+- 如果上面的逻辑没有返回，就会调用sp.QueueInventory。
+
+>这里进入了peer中的QueueInventory方法：
+
+```go
+// QueueInventory adds the passed inventory to the inventory send queue which
+// might not be sent right away, rather it is trickled to the peer in batches.
+// Inventory that the peer is already known to have is ignored.
+//
+// This function is safe for concurrent access.
+func (p *Peer) QueueInventory(invVect *wire.InvVect) {
+    // Don't add the inventory to the send queue if the peer is already
+    // known to have it.
+    if p.knownInventory.Exists(invVect) {
+        return
+    }
+
+    // Avoid risk of deadlock if goroutine already exited.  The goroutine
+    // we will be sending to hangs around until it knows for a fact that
+    // it is marked as disconnected and *then* it drains the channels.
+    if !p.Connected() {
+        return
+    }
+
+    p.outputInvChan <- invVect
+}
+```
+
+当此节点收到某个peer的invVect时，会缓存起来，因此，在这里会先判断下。
+
+>写到outputInvChan的数据，最后就在出去的queueHandler中处理
+
+```go
+func (p *Peer) queueHandler() {
+    ...
+    // To avoid duplication below.
+    queuePacket := func(msg outMsg, list *list.List, waiting bool) bool {
+        if !waiting {
+            p.sendQueue <- msg
+        } else {
+            list.PushBack(msg)
+        }
+        // we are always waiting now.
+        return true
+    }
+
+    ...
+    case iv := <-p.outputInvChan:
+        // No handshake?  They'll find out soon enough.
+        if p.VersionKnown() {
+            // If this is a new block, then we'll blast it
+            // out immediately, sipping the inv trickle
+            // queue.
+            if iv.Type == wire.InvTypeBlock ||
+                iv.Type == wire.InvTypeWitnessBlock {
+
+                invMsg := wire.NewMsgInvSizeHint(1)
+                invMsg.AddInvVect(iv)
+                waiting = queuePacket(outMsg{msg: invMsg},
+                    pendingMsgs, waiting)
+            } else {
+                invSendQueue.PushBack(iv)
+            }
+        }
+    case <-trickleTicker.C:
+        // Don't send anything if we're disconnecting or there
+        // is no queued inventory.
+        // version is known if send queue has any entries.
+        if atomic.LoadInt32(&p.disconnect) != 0 ||
+            invSendQueue.Len() == 0 {
+            continue
+        }
+
+        // Create and send as many inv messages as needed to
+        // drain the inventory send queue.
+        invMsg := wire.NewMsgInvSizeHint(uint(invSendQueue.Len()))
+        for e := invSendQueue.Front(); e != nil; e = invSendQueue.Front() {
+            iv := invSendQueue.Remove(e).(*wire.InvVect)
+
+            // Don't send inventory that became known after
+            // the initial check.
+            if p.knownInventory.Exists(iv) {
+                continue
+            }
+
+            invMsg.AddInvVect(iv)
+            if len(invMsg.InvList) >= maxInvTrickleSize {
+                waiting = queuePacket(
+                    outMsg{msg: invMsg},
+                    pendingMsgs, waiting)
+                invMsg = wire.NewMsgInvSizeHint(uint(invSendQueue.Len()))
+            }
+
+            // Add the inventory that is being relayed to
+            // the known inventory for the peer.
+            p.AddKnownInventory(iv)
+        }
+        if len(invMsg.InvList) > 0 {
+            waiting = queuePacket(outMsg{msg: invMsg},
+                pendingMsgs, waiting)
+        }
+}
+```
+
+如果是InvTypeBlock或者InvTypeWitnessBlock类型，上面也有说明，表示优先级比较高，直接包装成invMsg，放到queuePacket中等待发送。否则就放到invSendQueue中，等待trickleTicker定时处理。
+
+>MsgInv
+
+```go
+// MsgInv implements the Message interface and represents a bitcoin inv message.
+// It is used to advertise a peer's known data such as blocks and transactions
+// through inventory vectors.  It may be sent unsolicited to inform other peers
+// of the data or in response to a getblocks message (MsgGetBlocks).  Each
+// message is limited to a maximum number of inventory vectors, which is
+// currently 50,000.
+//
+// Use the AddInvVect function to build up the list of inventory vectors when
+// sending an inv message to another peer.
+type MsgInv struct {
+    InvList []*InvVect
+}
+```
+
+#### 1.4.3.2. OnInv
+
+假如此时，远程peer节点已经收到前面发的消息。
+
+```go
+
+// OnInv is invoked when a peer receives an inv bitcoin message and is
+// used to examine the inventory being advertised by the remote peer and react
+// accordingly.  We pass the message down to blockmanager which will call
+// QueueMessage with any appropriate responses.
+func (sp *serverPeer) OnInv(_ *peer.Peer, msg *wire.MsgInv) {
+    if !cfg.BlocksOnly {
+        if len(msg.InvList) > 0 {
+            sp.server.syncManager.QueueInv(msg, sp.Peer)
+        }
+        return
+    }
+
+    newInv := wire.NewMsgInvSizeHint(uint(len(msg.InvList)))
+    for _, invVect := range msg.InvList {
+        if invVect.Type == wire.InvTypeTx {
+            peerLog.Tracef("Ignoring tx %v in inv from %v -- "+
+                "blocksonly enabled", invVect.Hash, sp)
+            if sp.ProtocolVersion() >= wire.BIP0037Version {
+                peerLog.Infof("Peer %v is announcing "+
+                    "transactions -- disconnecting", sp)
+                sp.Disconnect()
+                return
+            }
+            continue
+        }
+        err := newInv.AddInvVect(invVect)
+        if err != nil {
+            peerLog.Errorf("Failed to add inventory vector: %v", err)
+            break
+        }
+    }
+
+    if len(newInv.InvList) > 0 {
+        sp.server.syncManager.QueueInv(newInv, sp.Peer)
+    }
+}
+```
+
+> 上面的syncManager.QueueInv最后会通过blockHandler调用下面的处理方法。
+
+```go
+// handleInvMsg handles inv messages from all peers.
+// We examine the inventory advertised by the remote peer and act accordingly.
+func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
+    peer := imsg.peer
+    state, exists := sm.peerStates[peer]
+    if !exists {
+        log.Warnf("Received inv message from unknown peer %s", peer)
+        return
+    }
+
+    // Attempt to find the final block in the inventory list.  There may
+    // not be one.
+    lastBlock := -1
+    invVects := imsg.inv.InvList
+    for i := len(invVects) - 1; i >= 0; i-- {
+        if invVects[i].Type == wire.InvTypeBlock {
+            lastBlock = i
+            break
+        }
+    }
+
+    // If this inv contains a block announcement, and this isn't coming from
+    // our current sync peer or we're current, then update the last
+    // announced block for this peer. We'll use this information later to
+    // update the heights of peers based on blocks we've accepted that they
+    // previously announced.
+    if lastBlock != -1 && (peer != sm.syncPeer || sm.current()) {
+        peer.UpdateLastAnnouncedBlock(&invVects[lastBlock].Hash)
+    }
+
+    // Ignore invs from peers that aren't the sync if we are not current.
+    // Helps prevent fetching a mass of orphans.
+    if peer != sm.syncPeer && !sm.current() {
+        return
+    }
+
+    // If our chain is current and a peer announces a block we already
+    // know of, then update their current block height.
+    if lastBlock != -1 && sm.current() {
+        blkHeight, err := sm.chain.BlockHeightByHash(&invVects[lastBlock].Hash)
+        if err == nil {
+            peer.UpdateLastBlockHeight(blkHeight)
+        }
+    }
+
+    // Request the advertised inventory if we don't already have it.  Also,
+    // request parent blocks of orphans if we receive one we already have.
+    // Finally, attempt to detect potential stalls due to long side chains
+    // we already have and request more blocks to prevent them.
+    for i, iv := range invVects {
+        // Ignore unsupported inventory types.
+        switch iv.Type {
+        case wire.InvTypeBlock:
+        case wire.InvTypeTx:
+        case wire.InvTypeWitnessBlock:
+        case wire.InvTypeWitnessTx:
+        default:
+            continue
+        }
+
+        // Add the inventory to the cache of known inventory
+        // for the peer.
+        peer.AddKnownInventory(iv)
+
+        // Ignore inventory when we're in headers-first mode.
+        if sm.headersFirstMode {
+            continue
+        }
+
+        // Request the inventory if we don't already have it.
+        haveInv, err := sm.haveInventory(iv)
+        if err != nil {
+            log.Warnf("Unexpected failure when checking for "+
+                "existing inventory during inv message "+
+                "processing: %v", err)
+            continue
+        }
+        if !haveInv {
+            if iv.Type == wire.InvTypeTx {
+                // Skip the transaction if it has already been
+                // rejected.
+                if _, exists := sm.rejectedTxns[iv.Hash]; exists {
+                    continue
+                }
+            }
+
+            // Ignore invs block invs from non-witness enabled
+            // peers, as after segwit activation we only want to
+            // download from peers that can provide us full witness
+            // data for blocks.
+            if !peer.IsWitnessEnabled() && iv.Type == wire.InvTypeBlock {
+                continue
+            }
+
+            // Add it to the request queue.
+            state.requestQueue = append(state.requestQueue, iv)
+            continue
+        }
+
+        if iv.Type == wire.InvTypeBlock {
+            // The block is an orphan block that we already have.
+            // When the existing orphan was processed, it requested
+            // the missing parent blocks.  When this scenario
+            // happens, it means there were more blocks missing
+            // than are allowed into a single inventory message.  As
+            // a result, once this peer requested the final
+            // advertised block, the remote peer noticed and is now
+            // resending the orphan block as an available block
+            // to signal there are more missing blocks that need to
+            // be requested.
+            if sm.chain.IsKnownOrphan(&iv.Hash) {
+                // Request blocks starting at the latest known
+                // up to the root of the orphan that just came
+                // in.
+                orphanRoot := sm.chain.GetOrphanRoot(&iv.Hash)
+                locator, err := sm.chain.LatestBlockLocator()
+                if err != nil {
+                    log.Errorf("PEER: Failed to get block "+
+                        "locator for the latest block: "+
+                        "%v", err)
+                    continue
+                }
+                peer.PushGetBlocksMsg(locator, orphanRoot)
+                continue
+            }
+
+            // We already have the final block advertised by this
+            // inventory message, so force a request for more.  This
+            // should only happen if we're on a really long side
+            // chain.
+            if i == lastBlock {
+                // Request blocks after this one up to the
+                // final one the remote peer knows about (zero
+                // stop hash).
+                locator := sm.chain.BlockLocatorFromHash(&iv.Hash)
+                peer.PushGetBlocksMsg(locator, &zeroHash)
+            }
+        }
+    }
+
+    // Request as much as possible at once.  Anything that won't fit into
+    // the request will be requested on the next inv message.
+    numRequested := 0
+    gdmsg := wire.NewMsgGetData()
+    requestQueue := state.requestQueue
+    for len(requestQueue) != 0 {
+        iv := requestQueue[0]
+        requestQueue[0] = nil
+        requestQueue = requestQueue[1:]
+
+        switch iv.Type {
+        case wire.InvTypeWitnessBlock:
+            fallthrough
+        case wire.InvTypeBlock:
+            // Request the block if there is not already a pending
+            // request.
+            if _, exists := sm.requestedBlocks[iv.Hash]; !exists {
+                sm.requestedBlocks[iv.Hash] = struct{}{}
+                sm.limitMap(sm.requestedBlocks, maxRequestedBlocks)
+                state.requestedBlocks[iv.Hash] = struct{}{}
+
+                if peer.IsWitnessEnabled() {
+                    iv.Type = wire.InvTypeWitnessBlock
+                }
+
+                gdmsg.AddInvVect(iv)
+                numRequested++
+            }
+
+        case wire.InvTypeWitnessTx:
+            fallthrough
+        case wire.InvTypeTx:
+            // Request the transaction if there is not already a
+            // pending request.
+            if _, exists := sm.requestedTxns[iv.Hash]; !exists {
+                sm.requestedTxns[iv.Hash] = struct{}{}
+                sm.limitMap(sm.requestedTxns, maxRequestedTxns)
+                state.requestedTxns[iv.Hash] = struct{}{}
+
+                // If the peer is capable, request the txn
+                // including all witness data.
+                if peer.IsWitnessEnabled() {
+                    iv.Type = wire.InvTypeWitnessTx
+                }
+
+                gdmsg.AddInvVect(iv)
+                numRequested++
+            }
+        }
+
+        if numRequested >= wire.MaxInvPerMsg {
+            break
+        }
+    }
+    state.requestQueue = requestQueue
+    if len(gdmsg.InvList) > 0 {
+        peer.QueueMessage(gdmsg, nil)
+    }
+}
+```

@@ -13,6 +13,7 @@
             - [1.2.2.2. IsCoinBase](#1222-iscoinbase)
             - [1.2.2.3. CheckTransactionSanity](#1223-checktransactionsanity)
             - [1.2.2.4. BuildMerkleTreeStore](#1224-buildmerkletreestore)
+        - [1.2.3. findPreviousCheckpoint](#123-findpreviouscheckpoint)
 
 <!-- /TOC -->
 
@@ -830,3 +831,105 @@ func writeTxWitness(w io.Writer, pver uint32, version int32, wit [][]byte) error
 }
 ```
 
+### 1.2.3. findPreviousCheckpoint
+
+这个方法用于从当前节点所有已经保存过的区块中查找到最近的一个在checkpoint点上的区块，checkpoint是在chaincfg中配置的，在前面章节有介绍过。
+
+- nextCheckpoint:是当前节点下一个检查点，而且是没有得到的。
+- checkpointNode:是当前节点已经包含的最近的检查点的区块。
+
+如果以上两个属性都为空，就会去查找这两个值。在bestchain中的最近区块没有超过checkpoints中最大的检查点之前。nextCheckpoint是一定可以找到的，就算只有一个区块，而checkpointNode不一定有。如果达到了nextCheckpoint(b.bestChain.Tip().height == b.nextCheckpoint.Height)，就把当前nextCheckpoint的节点设置成checkpointNode，然后开始查找下一个nextCheckpoint，
+当达到最后一个checkpoint(b.bestChain.Tip().height == b.checkpoints[numCheckpoints-1].Height)时，nextCheckpoint被设置成空。以后就永远都固定在最后一个checkpoint点的区块了。除非代码更新，添加新的checkpoint。
+
+>逻辑如下：
+
+```go
+// findPreviousCheckpoint finds the most recent checkpoint that is already
+// available in the downloaded portion of the block chain and returns the
+// associated block node.  It returns nil if a checkpoint can't be found (this
+// should really only happen for blocks before the first checkpoint).
+//
+// This function MUST be called with the chain lock held (for reads).
+func (b *BlockChain) findPreviousCheckpoint() (*blockNode, error) {
+    if !b.HasCheckpoints() {
+        return nil, nil
+    }
+
+    // Perform the initial search to find and cache the latest known
+    // checkpoint if the best chain is not known yet or we haven't already
+    // previously searched.
+    checkpoints := b.checkpoints
+    numCheckpoints := len(checkpoints)
+    if b.checkpointNode == nil && b.nextCheckpoint == nil {
+        // Loop backwards through the available checkpoints to find one
+        // that is already available.
+        for i := numCheckpoints - 1; i >= 0; i-- {
+            node := b.index.LookupNode(checkpoints[i].Hash)
+            if node == nil || !b.bestChain.Contains(node) {
+                continue
+            }
+
+            // Checkpoint found.  Cache it for future lookups and
+            // set the next expected checkpoint accordingly.
+            b.checkpointNode = node
+            if i < numCheckpoints-1 {
+                b.nextCheckpoint = &checkpoints[i+1]
+            }
+            return b.checkpointNode, nil
+        }
+
+        // No known latest checkpoint.  This will only happen on blocks
+        // before the first known checkpoint.  So, set the next expected
+        // checkpoint to the first checkpoint and return the fact there
+        // is no latest known checkpoint block.
+        b.nextCheckpoint = &checkpoints[0]
+        return nil, nil
+    }
+
+    // At this point we've already searched for the latest known checkpoint,
+    // so when there is no next checkpoint, the current checkpoint lockin
+    // will always be the latest known checkpoint.
+    if b.nextCheckpoint == nil {
+        return b.checkpointNode, nil
+    }
+
+    // When there is a next checkpoint and the height of the current best
+    // chain does not exceed it, the current checkpoint lockin is still
+    // the latest known checkpoint.
+    if b.bestChain.Tip().height < b.nextCheckpoint.Height {
+        return b.checkpointNode, nil
+    }
+
+    // We've reached or exceeded the next checkpoint height.  Note that
+    // once a checkpoint lockin has been reached, forks are prevented from
+    // any blocks before the checkpoint, so we don't have to worry about the
+    // checkpoint going away out from under us due to a chain reorganize.
+
+    // Cache the latest known checkpoint for future lookups.  Note that if
+    // this lookup fails something is very wrong since the chain has already
+    // passed the checkpoint which was verified as accurate before inserting
+    // it.
+    checkpointNode := b.index.LookupNode(b.nextCheckpoint.Hash)
+    if checkpointNode == nil {
+        return nil, AssertError(fmt.Sprintf("findPreviousCheckpoint "+
+            "failed lookup of known good block node %s",
+            b.nextCheckpoint.Hash))
+    }
+    b.checkpointNode = checkpointNode
+
+    // Set the next expected checkpoint.
+    checkpointIndex := -1
+    for i := numCheckpoints - 1; i >= 0; i-- {
+        if checkpoints[i].Hash.IsEqual(b.nextCheckpoint.Hash) {
+            checkpointIndex = i
+            break
+        }
+    }
+    b.nextCheckpoint = nil
+    if checkpointIndex != -1 && checkpointIndex < numCheckpoints-1 {
+        b.nextCheckpoint = &checkpoints[checkpointIndex+1]
+    }
+
+    return b.checkpointNode, nil
+}
+```

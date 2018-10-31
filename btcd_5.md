@@ -1,25 +1,31 @@
-# 1. 节点连结
+# 1. 连接管理
+
 <!-- TOC -->
 
-- [1. 节点连结](#1-节点连结)
-    - [1.1. 启动连接管理](#11-启动连接管理)
-        - [1.1.1. 启动监听处理](#111-启动监听处理)
-            - [1.1.1.1. net.Listen](#1111-netlisten)
-            - [1.1.1.2. listener.Accept()](#1112-listeneraccept)
-        - [1.1.2. 创建第一个连接](#112-创建第一个连接)
-            - [1.1.2.1. NewConnReq](#1121-newconnreq)
-            - [1.1.2.2. 实现接连Connect](#1122-实现接连connect)
-        - [1.1.3. 连接失败](#113-连接失败)
-            - [1.1.3.1. 失败情况](#1131-失败情况)
-            - [1.1.3.2. 失败处理](#1132-失败处理)
-    - [1.2. 断开连结](#12-断开连结)
-        - [1.2.1. 节点断开监听](#121-节点断开监听)
-        - [1.2.2. 处理节点断开](#122-处理节点断开)
-        - [1.2.3. 处理连接断开](#123-处理连接断开)
+- [1. 连接管理](#1-连接管理)
+    - [1.1. 简介](#11-简介)
+    - [1.2. 启动连接管理](#12-启动连接管理)
+        - [1.2.1. 启动监听处理](#121-启动监听处理)
+            - [1.2.1.1. net.Listen](#1211-netlisten)
+            - [1.2.1.2. listener.Accept()](#1212-listeneraccept)
+        - [1.2.2. 创建第一个连接](#122-创建第一个连接)
+            - [1.2.2.1. NewConnReq](#1221-newconnreq)
+            - [1.2.2.2. 实现接连Connect](#1222-实现接连connect)
+        - [1.2.3. 连接失败](#123-连接失败)
+            - [1.2.3.1. 失败情况](#1231-失败情况)
+            - [1.2.3.2. 失败处理](#1232-失败处理)
+    - [1.3. 断开连结](#13-断开连结)
+        - [1.3.1. 节点断开监听](#131-节点断开监听)
+        - [1.3.2. 处理节点断开](#132-处理节点断开)
+        - [1.3.3. 处理连接断开](#133-处理连接断开)
 
 <!-- /TOC -->
 
-## 1.1. 启动连接管理
+## 1.1. 简介
+
+ConnManager负责管理当前节点所有的连接管理，并对所有连接监听处理。并且把创建好的连接返回给server。
+
+## 1.2. 启动连接管理
 
 上一章讲了节点地址服务。当前节点得到一些可用地址之后，就会建立连接，维护起来。在这个章，我们来看看第一个连结是如何建立的。首先，我们从go s.connManager.Start()开始，看看这个服务启动时做了什么事。
 
@@ -56,11 +62,11 @@ func (cm *ConnManager) Start() {
 - 启动端口监听处理
 - 创建一些接连（默认8个）
 
-### 1.1.1. 启动监听处理
+### 1.2.1. 启动监听处理
 
 在[server.NewServer](btcd_2.md#13-newserver)中，会调用initListeners启用监听器。然后这些监听器作为配置项传入connmanager。然后在Start时开始处理节点请求。先来看看网络监听器的创建：
 
-#### 1.1.1.1. net.Listen
+#### 1.2.1.1. net.Listen
 
 ```go
 // initListeners initializes the configured net listeners and adds any bound
@@ -90,7 +96,7 @@ func initListeners(amgr *addrmgr.AddrManager, listenAddrs []string, services wir
 
 由于我们没有配置，默认情况会启用ip4和ip6的tcp端口监听。
 
-#### 1.1.1.2. listener.Accept()
+#### 1.2.1.2. listener.Accept()
 
 ```go
 // listenHandler accepts incoming connections on a given listener.  It must be
@@ -139,7 +145,7 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 - 等待节点退出通知
 
 
-### 1.1.2. 创建第一个连接
+### 1.2.2. 创建第一个连接
 
 上面的逻辑是被动建立一个连接。下面我们来看看，得到种子节点之后，是如何主动去连接一个节点的。
 
@@ -154,7 +160,7 @@ for i := atomic.LoadUint64(&cm.connReqCount); i < uint64(cm.cfg.TargetOutbound);
 <!-- TargetOutbound: 默认为8（如果配置文件中MaxPeers没有设置） -->
 ```
 
-#### 1.1.2.1. NewConnReq
+#### 1.2.2.1. NewConnReq
 
 ```go
 // NewConnReq creates a new connection request and connects to the
@@ -268,7 +274,7 @@ newAddressFunc = func() (net.Addr, error) {
 }
 ```
 
-#### 1.1.2.2. 实现接连Connect
+#### 1.2.2.2. 实现接连Connect
 
 开始拨号连接，cm.cfg.Dial(c.Addr)调用的方法就是net.Dial。连接成功之后，就通知处理器处理(connHandler)。
 
@@ -407,11 +413,11 @@ func (a *AddrManager) Good(addr *wire.NetAddress) {
 
 至此，连进来的节点逻辑和连接出去的节点逻辑大致分析完。我们来看看连接失败情况。
 
-### 1.1.3. 连接失败
+### 1.2.3. 连接失败
 
 >两种情况下会失败，会发一个失败请求：
 
-#### 1.1.3.1. 失败情况
+#### 1.2.3.1. 失败情况
 
 - GetNewAddress error
   
@@ -439,7 +445,7 @@ if err != nil {
 }
 ```
 
-#### 1.1.3.2. 失败处理
+#### 1.2.3.2. 失败处理
 
 ```go
 func (cm *ConnManager) connHandler() {
@@ -522,11 +528,11 @@ for _, addr := range permanentPeers {
 }
 ```
 
-## 1.2. 断开连结
+## 1.3. 断开连结
 
 正常情况下，收到退出事情（channal p.quit）时，会断开连结。我们来来退出的流程处理：
 
-### 1.2.1. 节点断开监听
+### 1.3.1. 节点断开监听
 
 在节点创建时，会监听退出事件。
 
@@ -560,7 +566,7 @@ func (s *server) peerHandler() {
     ...
 ```
 
-### 1.2.2. 处理节点断开
+### 1.3.2. 处理节点断开
 
 ```go
 // handleDonePeerMsg deals with peers that have signalled they are done.  It is
@@ -587,7 +593,7 @@ func (s *server) handleDonePeerMsg(state *peerState, sp *serverPeer) {
 - 处理地址  
     ```修改当前连接的NetAddress中的Timestamp（Last time the address was seen.）```
 
-### 1.2.3. 处理连接断开
+### 1.3.3. 处理连接断开
 
 调用Disconnect发送断开通知到连接处理器goroutine中处理：
 

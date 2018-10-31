@@ -1,10 +1,12 @@
 # 1. blockchain
+
 <!-- TOC -->
 
 - [1. blockchain](#1-blockchain)
-    - [1.1. 相关结构体](#11-相关结构体)
+    - [1.1. 简介](#11-简介)
         - [1.1.1. BlockChain](#111-blockchain)
         - [1.1.2. blockNode](#112-blocknode)
+        - [1.1.3.](#113)
     - [1.2. blockchain创建流程](#12-blockchain创建流程)
         - [1.2.1. Checkpoint索引](#121-checkpoint索引)
         - [1.2.2. New BlockChain](#122-new-blockchain)
@@ -20,7 +22,9 @@
 
 <!-- /TOC -->
 
-## 1.1. 相关结构体
+## 1.1. 简介
+
+本章大致看下创建blockchain对象过程。
 
 ### 1.1.1. BlockChain
 
@@ -171,6 +175,8 @@ type blockNode struct {
     status blockStatus
 }
 ```
+
+### 1.1.3.  
 
 ## 1.2. blockchain创建流程
 
@@ -472,6 +478,7 @@ func (b *BlockChain) createChainState() error {
     return err
 }
 ```
+
 这个方法里，会生成创世区块。然后得到一些基本状态，包括numTxns，blockSize，blockWeight等。最后会生成一些索引的bucket等，最后保存区块到ffldb中。根据上面的代码，其实就可以看出保存一个区块有那些方面。
 
 1. 保存block头及状态到索引
@@ -533,6 +540,8 @@ func dbStoreBlock(dbTx database.Tx, block *btcutil.Block) error {
 ```
 
 >**database/ffldb/db.go**
+
+提交时处理逻辑：
 
 ```go
 location, err := tx.db.store.writeBlock(blockData.bytes)

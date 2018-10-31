@@ -3,7 +3,7 @@
 <!-- TOC -->
 
 - [1. 节点peer](#1-节点peer)
-    - [1.1. peer overview](#11-peer-overview)
+    - [1.1. 简介](#11-简介)
     - [1.2. peer.start](#12-peerstart)
     - [1.3. peer握手](#13-peer握手)
         - [1.3.1. 发送version消息](#131-发送version消息)
@@ -30,7 +30,9 @@
 
 <!-- /TOC -->
 
-## 1.1. peer overview
+## 1.1. 简介
+
+>peer包装成一个独立的包，可以很方便的维护节点之间通信。具体的介绍如下：
 
 The overall data flow of a peer is split into **3 goroutines**.  Inbound
 messages are read via the **inHandler** goroutine and generally dispatched to

@@ -1,33 +1,40 @@
 # 1. 系统启动过程
+
 <!-- TOC -->
 
 - [1. 系统启动过程](#1-系统启动过程)
-    - [1.1. 生成配置](#11-生成配置)
-        - [1.1.1. loadConfig](#111-loadconfig)
-    - [1.2. 加载DB](#12-加载db)
-        - [1.2.1. loadBlockDB](#121-loadblockdb)
-    - [1.3. NewServer](#13-newserver)
-        - [1.3.1. 创建addressManager](#131-创建addressmanager)
-        - [1.3.2. initListeners](#132-initlisteners)
-        - [1.3.3. 创建一个server](#133-创建一个server)
-        - [1.3.4. 创建blockchain相关的索引](#134-创建blockchain相关的索引)
-        - [1.3.5. mergeCheckpoints](#135-mergecheckpoints)
-        - [1.3.6. 创建blockchain对象](#136-创建blockchain对象)
-        - [1.3.7. 创建FeeEstimator](#137-创建feeestimator)
-        - [1.3.8. 创建内存池](#138-创建内存池)
-        - [1.3.9. 创建syncManager](#139-创建syncmanager)
-        - [1.3.10. 创建cpu挖矿实例](#1310-创建cpu挖矿实例)
-        - [1.3.11. 创建newAddressFunc](#1311-创建newaddressfunc)
-        - [1.3.12. 创建connmgr](#1312-创建connmgr)
-        - [1.3.13. 连结配置的固定节点](#1313-连结配置的固定节点)
-        - [1.3.14. 启用RPC服务](#1314-启用rpc服务)
-    - [1.4. server.start()](#14-serverstart)
-        - [1.4.1. peerHandler](#141-peerhandler)
+    - [1.1. 简介](#11-简介)
+    - [1.2. 生成配置](#12-生成配置)
+        - [1.2.1. loadConfig](#121-loadconfig)
+    - [1.3. 加载DB](#13-加载db)
+        - [1.3.1. loadBlockDB](#131-loadblockdb)
+    - [1.4. NewServer](#14-newserver)
+        - [1.4.1. 创建addressManager](#141-创建addressmanager)
+        - [1.4.2. initListeners](#142-initlisteners)
+        - [1.4.3. 创建一个server](#143-创建一个server)
+        - [1.4.4. 创建blockchain相关的索引](#144-创建blockchain相关的索引)
+        - [1.4.5. mergeCheckpoints](#145-mergecheckpoints)
+        - [1.4.6. 创建blockchain对象](#146-创建blockchain对象)
+        - [1.4.7. 创建FeeEstimator](#147-创建feeestimator)
+        - [1.4.8. 创建内存池](#148-创建内存池)
+        - [1.4.9. 创建syncManager](#149-创建syncmanager)
+        - [1.4.10. 创建cpu挖矿实例](#1410-创建cpu挖矿实例)
+        - [1.4.11. 创建newAddressFunc](#1411-创建newaddressfunc)
+        - [1.4.12. 创建connmgr](#1412-创建connmgr)
+        - [1.4.13. 连结配置的固定节点](#1413-连结配置的固定节点)
+        - [1.4.14. 启用RPC服务](#1414-启用rpc服务)
+    - [1.5. server.start()](#15-serverstart)
+        - [1.5.1. peerHandler](#151-peerhandler)
 
 <!-- /TOC -->
-## 1.1. 生成配置
 
-### 1.1.1. loadConfig
+## 1.1. 简介
+
+系统在启用过程中，会初始化环境及创建需要的对象。如果是第一次启用，会创建配置文件，创建db文件，创建第一个创世区块，创建相关的db索引bucket，并且启用8333节点之间通信的监听服务,启用rpcServer，rpcServer是用户与节点通信的服务器。
+
+## 1.2. 生成配置
+
+### 1.2.1. loadConfig
 
 1. 创建config对象
 2. 检查并生成主目录
@@ -50,9 +57,9 @@
 15. 配置cfg.dial 和cfg.lookup 方法
 16. 代理配置
 
-## 1.2. 加载DB
+## 1.3. 加载DB
 
-### 1.2.1. loadBlockDB
+### 1.3.1. loadBlockDB
 
 1. 得到dbpath
 dbPath := blockDbPath(cfg.DbType) //  cfg.DbType == ffldb
@@ -77,11 +84,11 @@ drv.Open进入了database/ffldb/db.go中
 如果打开失败，说明是第一次运行，就会调用接口创建一个文件：
 db, err = database.Create(cfg.DbType, dbPath, activeNetParams.Net)
 
-## 1.3. NewServer
+## 1.4. NewServer
 
 [server.go]()
 
-### 1.3.1. 创建addressManager
+### 1.4.1. 创建addressManager
 
 ```go
 amgr := addrmgr.New(cfg.DataDir, btcdLookup)
@@ -90,7 +97,7 @@ addrmgr会读取默认的节点，配置文件在peers.json：
 filepath.Join(dataDir, "peers.json")
 ```
 
-### 1.3.2. initListeners
+### 1.4.2. initListeners
 
 启用用监听tcp4和tcp6
 ```go
@@ -109,7 +116,7 @@ if !cfg.DisableListen {
     }
 }
 ```
-### 1.3.3. 创建一个server
+### 1.4.3. 创建一个server
 
 ```golang
 server provides a bitcoin server for handling communications to and from
@@ -137,7 +144,7 @@ s := server{
 }
 ```
 
-### 1.3.4. 创建blockchain相关的索引
+### 1.4.4. 创建blockchain相关的索引
 
 索引相关的包在btcd/blockchain/indexers/中。索引数据是通过ffldb保存到leveldb中。索引的创建都与配置有关，默认是不启用索引。
 
@@ -170,9 +177,9 @@ indexes为前面创建的全部索引的集合
 
 indexManager = indexers.NewManager(db, indexes)
 ```
-### 1.3.5. mergeCheckpoints
+### 1.4.5. mergeCheckpoints
 
-### 1.3.6. 创建blockchain对象
+### 1.4.6. 创建blockchain对象
 
 ```golang
 s.chain, err = blockchain.New(&blockchain.Config{
@@ -188,7 +195,7 @@ s.chain, err = blockchain.New(&blockchain.Config{
 
 ```
 
-### 1.3.7. 创建FeeEstimator
+### 1.4.7. 创建FeeEstimator
 
 FeeEstimator 用于评估当前交易费用。
 
@@ -226,7 +233,7 @@ if s.feeEstimator == nil || s.feeEstimator.LastKnownHeight() != s.chain.BestSnap
 三方平台：
 https://www.buybitcoinworldwide.com/fee-calculator/
 
-### 1.3.8. 创建内存池
+### 1.4.8. 创建内存池
 
 内存池用于存放未确认的交易，在挖矿时会从这里取。
 
@@ -263,7 +270,7 @@ txC := mempool.Config{
 s.txMemPool = mempool.New(&txC)
 ```
 
-### 1.3.9. 创建syncManager
+### 1.4.9. 创建syncManager
 
 syncManager用于节点间消息同步，如区块。
 
@@ -282,7 +289,7 @@ s.syncManager, err = netsync.New(&netsync.Config{
 })
 ```
 
-### 1.3.10. 创建cpu挖矿实例
+### 1.4.10. 创建cpu挖矿实例
 
 ```go
 Create the mining policy and block template generator based on the configuration options.
@@ -309,7 +316,7 @@ s.cpuMiner = cpuminer.New(&cpuminer.Config{
 })
 ```
 
-### 1.3.11. 创建newAddressFunc
+### 1.4.11. 创建newAddressFunc
 
 newAddressFunc用于得到一个新的节点地址，里面会用到随机算法。
 ```go
@@ -332,7 +339,7 @@ if !cfg.SimNet && len(cfg.ConnectPeers) == 0 {
     }
 }
 ```
-### 1.3.12. 创建connmgr
+### 1.4.12. 创建connmgr
 
 connmgr 用于创建并维护连结，里面有两个重要的参数OnConnection和OnAccept用于创建peer.
 ```go
@@ -356,7 +363,7 @@ if err != nil {
 s.connManager = cmgr
 ```
 
-### 1.3.13. 连结配置的固定节点
+### 1.4.13. 连结配置的固定节点
 
 ```go
 // Start up persistent peers.
@@ -377,7 +384,7 @@ for _, addr := range permanentPeers {
 }
 ```
 
-### 1.3.14. 启用RPC服务
+### 1.4.14. 启用RPC服务
 
 ```go
 if !cfg.DisableRPC {
@@ -420,7 +427,7 @@ if !cfg.DisableRPC {
 }
 ```
 
-## 1.4. server.start()
+## 1.5. server.start()
 
 >start会根据配置启用几个独立的模块。
 
@@ -471,7 +478,7 @@ func (s *server) Start() {
 }
 ```
 
-### 1.4.1. peerHandler
+### 1.5.1. peerHandler
 
 peerHandler启动了节点相关的三个管理服务。
 

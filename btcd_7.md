@@ -3,7 +3,9 @@
 <!-- TOC -->
 
 - [1. 同步管理](#1-同步管理)
-    - [1.1. 介绍](#11-介绍)
+    - [1.1. 简介](#11-简介)
+        - [1.1.1. SyncManager](#111-syncmanager)
+        - [1.1.2. 创建syncManager](#112-创建syncmanager)
     - [1.2. 启动过程](#12-启动过程)
         - [1.2.1. blockHandler](#121-blockhandler)
     - [1.3. 同步区块](#13-同步区块)
@@ -29,9 +31,11 @@
 
 <!-- /TOC -->
 
-## 1.1. 介绍
+## 1.1. 简介
 
->SyncManager负责数据同步工作
+>SyncManager负责数据同步工作，包括启动时区块同步到最大高度。随时处理其它节点传播过来的交易或者区块，并且转发给其它节点。
+
+### 1.1.1. SyncManager
 
 ```go
 // SyncManager is used to communicate block related messages with peers. The
@@ -69,7 +73,7 @@ type SyncManager struct {
 }
 ```
 
->New
+### 1.1.2. 创建syncManager
 
 ```go
 // s=server
@@ -140,8 +144,9 @@ func (sm *SyncManager) resetHeaderState(newestHash *chainhash.Hash, newestHeight
 }
 ```
 
+## 1.2. 启动过程
 
->Start()
+Sync启动时会调用blockHandler()监听事件同步区块数。我们来看看它是如何同步的。
 
 ```go
 // Start begins the core block handler which processes block and inv messages.
@@ -156,10 +161,6 @@ func (sm *SyncManager) Start() {
     go sm.blockHandler()
 }
 ```
-
-## 1.2. 启动过程
-
-Sync启动时会调用blockHandler()监听事件同步区块数。我们来看看它是如何同步的。
 
 ### 1.2.1. blockHandler
 

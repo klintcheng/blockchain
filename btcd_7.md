@@ -22,9 +22,10 @@
         - [1.4.1. 订阅通知](#141-订阅通知)
         - [1.4.2. 通知处理](#142-通知处理)
             - [1.4.2.1. peerNotifier实现](#1421-peernotifier实现)
-        - [1.4.3. RelayInventory](#143-relayinventory)
+        - [1.4.3. 库存广播](#143-库存广播)
             - [1.4.3.1. handleRelayInvMsg](#1431-handlerelayinvmsg)
             - [1.4.3.2. OnInv](#1432-oninv)
+            - [1.4.3.3. handleInvMsg](#1433-handleinvmsg)
 
 <!-- /TOC -->
 
@@ -1712,7 +1713,7 @@ func (s *server) TransactionConfirmed(tx *btcutil.Tx) {
 }
 ```
 
-### 1.4.3. RelayInventory
+### 1.4.3. 库存广播
 
 不管是区块。还是新交易，都会调用到RelayInventory。比如钱包给rpcServer发了一条交易，rpc服务会调用AnnounceNewTransactions。
 
@@ -1905,7 +1906,7 @@ func (p *Peer) queueHandler() {
 }
 ```
 
-如果是InvTypeBlock或者InvTypeWitnessBlock类型，上面也有说明，表示优先级比较高，直接包装成invMsg，放到queuePacket中等待发送。否则就放到invSendQueue中，等待trickleTicker定时处理。
+如果是InvTypeBlock或者InvTypeWitnessBlock类型，上面也有说明，表示优先级比较高，直接包装成invMsg，放到queuePacket中等待发送。否则就放到invSendQueue中，等待trickleTicker定时处理，它会把在这个时间段内收到的iv缓冲数据一次性发出去。在这个过程中，如果iv数据达到maxInvTrickleSize(1000)，它会马上生成outMsg写到queuePacket中。并且创建一个新的invMsg。
 
 >MsgInv
 
@@ -1926,7 +1927,7 @@ type MsgInv struct {
 
 #### 1.4.3.2. OnInv
 
-假如此时，远程peer节点已经收到前面发的消息。
+当远程peer节点收到其它节点发的MsgInv消息。会在OnInv中处理。
 
 ```go
 
@@ -1969,6 +1970,9 @@ func (sp *serverPeer) OnInv(_ *peer.Peer, msg *wire.MsgInv) {
 ```
 
 > 上面的syncManager.QueueInv最后会通过blockHandler调用下面的处理方法。
+
+
+#### 1.4.3.3. handleInvMsg
 
 ```go
 // handleInvMsg handles inv messages from all peers.
@@ -2171,3 +2175,16 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
     }
 }
 ```
+
+当syncmanager开始同步时，会设置sm.syncPeer = bestPeer。最前面，会判断它是否为同步节点发的消息，如果不是同步节点消息，并且没有同步完成，直接返回。
+
+在for invVects循环内，会先添加当前库存信息到节点，如果在headersFirstMode情况下，说明当前节点正在同步过程中，会忽略后面的逻辑。然后检查自己节点是否有这个库存，如果haveInv=false,会做rejectedTxns和IsWitnessEnabled检查之后添加iv到requestQueue并且continue。如果已经有库存，并且是InvTypeBlock类型。会判断是否为已知的orphan block。如果是orphan block，说明对方节点有当前节点急需的orphan block，会马上生成block请求对方发送需要的block。如果刚好lastBlock==i，会请求iv.Hash之后的区块。
+
+>**orphan block:**
+如果当前节点收到一个block，但是它的前一个block在当前的chain中找不到，这个block就会添加到orphans(blockchain.orphans[hash]=block);比如当前chain为... 8, 9 , 10 .如果此时收到一个高为12的区块，它的父亲block找不到。如果调用GetOrphanRoot，会得到11的hash(&orphan.block.MsgBlock().Header.PrevBlock)。
+
+结束for invVects之后，开始处理requestQueue。如果是block.检查是否已经在requestedBlocks中，这个map在请求区块时会标记。如果是InvTypeTx，检查requestedTxns。如果通过就添加到gdmsg中。如果一次发送的数据量超过wire.MaxInvPerMsg，就会break。requestQueue保存到state.requestQueue。在后面会接着处理。
+
+因为网络中一直会有数据在传播，因此这个方法会间隔被调用，因此，如果此次requestQueue没有处理完成。下次还会接着处理。
+
+

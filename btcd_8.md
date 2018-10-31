@@ -14,6 +14,8 @@
             - [1.2.2.3. CheckTransactionSanity](#1223-checktransactionsanity)
             - [1.2.2.4. BuildMerkleTreeStore](#1224-buildmerkletreestore)
         - [1.2.3. findPreviousCheckpoint](#123-findpreviouscheckpoint)
+            - [1.2.3.1. checkpointNode比较](#1231-checkpointnode比较)
+        - [1.2.4. addOrphanBlock](#124-addorphanblock)
 
 <!-- /TOC -->
 
@@ -931,5 +933,153 @@ func (b *BlockChain) findPreviousCheckpoint() (*blockNode, error) {
     }
 
     return b.checkpointNode, nil
+}
+```
+
+#### 1.2.3.1. checkpointNode比较
+
+回到ProcessBlock中，如果查找的checkpointNode不为空，就可以这个检查点为标准，检查生成的区块的时间及难度数据，因为新的区块的难度值是一定比requiredTarget要小的，同时，新区块的Timestamp也是一定在checkpointNode之后的。
+
+**注意：难度值越小，说明区块生成难度越大。**
+
+> requiredTarget计算逻辑：
+
+newTarget.Mul(newTarget, adjustmentFactor)，每次把newTarget*4。直到durationVal小于等于0.
+
+```go
+duration := blockHeader.Timestamp.Sub(checkpointTime)
+requiredTarget := CompactToBig(b.calcEasiestDifficulty(
+            checkpointNode.bits, duration))
+
+// ---------CompactToBig是转换方法可以忽略
+
+// calcEasiestDifficulty calculates the easiest possible difficulty that a block
+// can have given starting difficulty bits and a duration.  It is mainly used to
+// verify that claimed proof of work by a block is sane as compared to a
+// known good checkpoint.
+func (b *BlockChain) calcEasiestDifficulty(bits uint32, duration time.Duration) uint32 {
+    // Convert types used in the calculations below.
+    durationVal := int64(duration / time.Second)
+    adjustmentFactor := big.NewInt(b.chainParams.RetargetAdjustmentFactor)
+
+    // The test network rules allow minimum difficulty blocks after more
+    // than twice the desired amount of time needed to generate a block has
+    // elapsed.
+    if b.chainParams.ReduceMinDifficulty {
+        reductionTime := int64(b.chainParams.MinDiffReductionTime /
+            time.Second)
+        if durationVal > reductionTime {
+            return b.chainParams.PowLimitBits
+        }
+    }
+
+    // Since easier difficulty equates to higher numbers, the easiest
+    // difficulty for a given duration is the largest value possible given
+    // the number of retargets for the duration and starting difficulty
+    // multiplied by the max adjustment factor.
+    newTarget := CompactToBig(bits)
+    for durationVal > 0 && newTarget.Cmp(b.chainParams.PowLimit) < 0 {
+        newTarget.Mul(newTarget, adjustmentFactor)
+        durationVal -= b.maxRetargetTimespan
+    }
+
+    // Limit new value to the proof of work limit.
+    if newTarget.Cmp(b.chainParams.PowLimit) > 0 {
+        newTarget.Set(b.chainParams.PowLimit)
+    }
+
+    return BigToCompact(newTarget)
+}
+```
+
+> 参数值：
+
+系统每过14天左右就要检查一下区块生成的难度，使生成一个区块的时间在TargetTimePerBlock左右。
+
+```go
+// TargetTimespan is the desired amount of time that should elapse
+// before the block difficulty requirement is examined to determine how
+// it should be changed in order to maintain the desired block
+// generation rate.
+TargetTimespan time.Duration
+
+
+TargetTimespan:           time.Hour * 24 * 14, // 14 days
+TargetTimePerBlock:       time.Minute * 10,    // 10 minutes
+RetargetAdjustmentFactor: 4,                   // 25% less, 400% more
+```
+
+```go
+// 创建BlockChain时的代码：
+
+params := config.ChainParams
+targetTimespan := int64(params.TargetTimespan / time.Second)
+targetTimePerBlock := int64(params.TargetTimePerBlock / time.Second)
+adjustmentFactor := params.RetargetAdjustmentFactor
+b := BlockChain{
+    ...
+    minRetargetTimespan: targetTimespan / adjustmentFactor,
+    maxRetargetTimespan: targetTimespan * adjustmentFactor,
+    blocksPerRetarget:   int32(targetTimespan / targetTimePerBlock),
+    ...
+}
+```
+
+### 1.2.4. addOrphanBlock
+
+在检查orphanblock之前，会先得到prevHashExists，也就是前一个区块是否存在（blockExists不重复说明）。**如果为false.就会添加当前block到orphans中，并且结束ProcessBlock处理。**
+
+1. 会移走过期的孤儿节点，并且设置一个oldestOrphan（最旧的孤儿节点）
+2. 如果orphans达到上限，就移走oldestOrphan
+3. 添加到orphans
+4. 维护进prevOrphans，prevOrphans用于查找当前区块的儿子节点。因为可能会有多个孤儿区块的前一个区块是相同的，所以这里b.prevOrphans[*prevHash]是一个数组。
+
+```go
+// addOrphanBlock adds the passed block (which is already determined to be
+// an orphan prior calling this function) to the orphan pool.  It lazily cleans
+// up any expired blocks so a separate cleanup poller doesn't need to be run.
+// It also imposes a maximum limit on the number of outstanding orphan
+// blocks and will remove the oldest received orphan block if the limit is
+// exceeded.
+func (b *BlockChain) addOrphanBlock(block *btcutil.Block) {
+    // Remove expired orphan blocks.
+    for _, oBlock := range b.orphans {
+        if time.Now().After(oBlock.expiration) {
+            b.removeOrphanBlock(oBlock)
+            continue
+        }
+
+        // Update the oldest orphan block pointer so it can be discarded
+        // in case the orphan pool fills up.
+        if b.oldestOrphan == nil || oBlock.expiration.Before(b.oldestOrphan.expiration) {
+            b.oldestOrphan = oBlock
+        }
+    }
+
+    // Limit orphan blocks to prevent memory exhaustion.
+    if len(b.orphans)+1 > maxOrphanBlocks {
+        // Remove the oldest orphan to make room for the new one.
+        b.removeOrphanBlock(b.oldestOrphan)
+        b.oldestOrphan = nil
+    }
+
+    // Protect concurrent access.  This is intentionally done here instead
+    // of near the top since removeOrphanBlock does its own locking and
+    // the range iterator is not invalidated by removing map entries.
+    b.orphanLock.Lock()
+    defer b.orphanLock.Unlock()
+
+    // Insert the block into the orphan map with an expiration time
+    // 1 hour from now.
+    expiration := time.Now().Add(time.Hour)
+    oBlock := &orphanBlock{
+        block:      block,
+        expiration: expiration,
+    }
+    b.orphans[*block.Hash()] = oBlock
+
+    // Add to previous hash lookup index for faster dependency lookups.
+    prevHash := &block.MsgBlock().Header.PrevBlock
+    b.prevOrphans[*prevHash] = append(b.prevOrphans[*prevHash], oBlock)
 }
 ```

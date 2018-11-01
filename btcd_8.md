@@ -12,10 +12,22 @@
             - [1.2.2.1. checkBlockHeaderSanity](#1221-checkblockheadersanity)
             - [1.2.2.2. IsCoinBase](#1222-iscoinbase)
             - [1.2.2.3. CheckTransactionSanity](#1223-checktransactionsanity)
-            - [1.2.2.4. BuildMerkleTreeStore](#1224-buildmerkletreestore)
         - [1.2.3. findPreviousCheckpoint](#123-findpreviouscheckpoint)
             - [1.2.3.1. checkpointNode比较](#1231-checkpointnode比较)
         - [1.2.4. addOrphanBlock](#124-addorphanblock)
+        - [1.2.5. maybeAcceptBlock](#125-maybeacceptblock)
+            - [1.2.5.1. checkBlockContext](#1251-checkblockcontext)
+            - [1.2.5.2. checkBlockHeaderContext](#1252-checkblockheadercontext)
+        - [1.2.6. dbStoreBlock之block.Bytes()](#126-dbstoreblock之blockbytes)
+            - [1.2.6.1. 序列化常识](#1261-序列化常识)
+            - [1.2.6.2. BtcEncode](#1262-btcencode)
+        - [1.2.7. newBlockNode](#127-newblocknode)
+        - [1.2.8. AddNode](#128-addnode)
+    - [1.3. 通用方法说明](#13-通用方法说明)
+        - [1.3.1. BuildMerkleTreeStore](#131-buildmerkletreestore)
+        - [1.3.2. calcNextRequiredDifficulty](#132-calcnextrequireddifficulty)
+        - [1.3.3. IsFinalizedTransaction](#133-isfinalizedtransaction)
+        - [1.3.4. ValidateWitnessCommitment](#134-validatewitnesscommitment)
 
 <!-- /TOC -->
 
@@ -261,7 +273,7 @@ func (b *BlockChain) blockExists(hash *chainhash.Hash) (bool, error) {
 
 ### 1.2.2. checkBlockSanity
 
-这个方法是个非常重要的方法，检查区块是否合规。
+这个方法是个非常重要的方法，检查区块是否正常。
 
 ```go
 // checkBlockSanity performs some preliminary checks on a block to ensure it is
@@ -377,9 +389,9 @@ func checkBlockSanity(block *btcutil.Block, powLimit *big.Int, timeSource Median
 
 其中重点的需要说明检查列举一下，在下面添加详解：
 
-1. checkBlockHeaderSanity
-2. IsCoinBase
-3. CheckTransactionSanity
+1. checkBlockHeaderSanity 检查区块头是否正常
+2. IsCoinBase 检查第一个交易是否为CoinBase交易
+3. CheckTransactionSanity 检查所有交易是否正常
 
 #### 1.2.2.1. checkBlockHeaderSanity
 
@@ -627,208 +639,6 @@ func CheckTransactionSanity(tx *btcutil.Tx) error {
         }
     }
 
-    return nil
-}
-```
-
-#### 1.2.2.4. BuildMerkleTreeStore
-
->区块头中包括戶交易生成的MerkleTree root节点。同时MerkleTree也是blockchain技术中很重要的一个点。
-
-因为BuildMerkle必须是满节点的完全二叉树。由于交易的hash全部在树的根节点中，可能会不足，所以要先计算出树的根节点数量。而二叉树的根的数量就是2的n-1次方，n为高度。nextPoT就是根节点数量。得到根节点数量就很容易算出arraySize。
-
->在生成树之前，要先计算交易的hash值，并添加到数组中merkles，其中有三个类型:
-
-1. coinbase 为zeroHash
-2. witness(隔离见证)交易，会生成带见证数据的hash
-3. 正常hash
-
-在根生成结束之后offset := nextPoT，说明右边空的节点直接当成空处理。比如只有三个节点
-
-最后从数组倒数第二层开始生成根节点的父节点数据，也就是从offset开始。比如处理到h1和h2时，会生成h12。处理到h3和h4时，如果h4为空，就当h4值等于h3，生成h34。假如有6个交易，也就是说在生成h78时，由于h7为空，所以h78直接为空。
-
-```go
-// BuildMerkleTreeStore creates a merkle tree from a slice of transactions,
-// stores it using a linear array, and returns a slice of the backing array.  A
-// linear array was chosen as opposed to an actual tree structure since it uses
-// about half as much memory.  The following describes a merkle tree and how it
-// is stored in a linear array.
-//
-// A merkle tree is a tree in which every non-leaf node is the hash of its
-// children nodes.  A diagram depicting how this works for bitcoin transactions
-// where h(x) is a double sha256 follows:
-//
-//	         root = h1234 = h(h12 + h34)
-//	        /                           \
-//	  h12 = h(h1 + h2)            h34 = h(h3 + h4)
-//	   /            \              /            \
-//	h1 = h(tx1)  h2 = h(tx2)    h3 = h(tx3)  h4 = h(tx4)
-//
-// The above stored as a linear array is as follows:
-//
-// 	[h1 h2 h3 h4 h12 h34 root]
-//
-// As the above shows, the merkle root is always the last element in the array.
-//
-// The number of inputs is not always a power of two which results in a
-// balanced tree structure as above.  In that case, parent nodes with no
-// children are also zero and parent nodes with only a single left node
-// are calculated by concatenating the left node with itself before hashing.
-// Since this function uses nodes that are pointers to the hashes, empty nodes
-// will be nil.
-//
-// The additional bool parameter indicates if we are generating the merkle tree
-// using witness transaction id's rather than regular transaction id's. This
-// also presents an additional case wherein the wtxid of the coinbase transaction
-// is the zeroHash.
-func BuildMerkleTreeStore(transactions []*btcutil.Tx, witness bool) []*chainhash.Hash {
-    // Calculate how many entries are required to hold the binary merkle
-    // tree as a linear array and create an array of that size.
-    nextPoT := nextPowerOfTwo(len(transactions))
-    arraySize := nextPoT*2 - 1
-    merkles := make([]*chainhash.Hash, arraySize)
-
-    // Create the base transaction hashes and populate the array with them.
-    for i, tx := range transactions {
-        // If we're computing a witness merkle root, instead of the
-        // regular txid, we use the modified wtxid which includes a
-        // transaction's witness data within the digest. Additionally,
-        // the coinbase's wtxid is all zeroes.
-        switch {
-        case witness && i == 0:
-            var zeroHash chainhash.Hash
-            merkles[i] = &zeroHash
-        case witness:
-            wSha := tx.MsgTx().WitnessHash()
-            merkles[i] = &wSha
-        default:
-            merkles[i] = tx.Hash()
-        }
-
-    }
-
-    // Start the array offset after the last transaction and adjusted to the
-    // next power of two.
-    offset := nextPoT
-    for i := 0; i < arraySize-1; i += 2 {
-        switch {
-        // When there is no left child node, the parent is nil too.
-        case merkles[i] == nil:
-            merkles[offset] = nil
-
-        // When there is no right child, the parent is generated by
-        // hashing the concatenation of the left child with itself.
-        case merkles[i+1] == nil:
-            newHash := HashMerkleBranches(merkles[i], merkles[i])
-            merkles[offset] = newHash
-
-        // The normal case sets the parent node to the double sha256
-        // of the concatentation of the left and right children.
-        default:
-            newHash := HashMerkleBranches(merkles[i], merkles[i+1])
-            merkles[offset] = newHash
-        }
-        offset++
-    }
-
-    return merkles
-}
-```
-
->看下BtcEncode中有没有Witness处理区别，前部分，都差别不大，只是在版本后面添加了一个witessMarkerBytes标记。真正的witness数据是在txin和txout都写完之后，最后添加进入的。
-
-```go
-// witnessMarkerBytes are a pair of bytes specific to the witness encoding. If
-// this sequence is encoutered, then it indicates a transaction has iwtness
-// data. The first byte is an always 0x00 marker byte, which allows decoders to
-// distinguish a serialized transaction with witnesses from a regular (legacy)
-// one. The second byte is the Flag field, which at the moment is always 0x01,
-// but may be extended in the future to accommodate auxiliary non-committed
-// fields.
-var witessMarkerBytes = []byte{0x00, 0x01}
-
-// BtcEncode encodes the receiver to w using the bitcoin protocol encoding.
-// This is part of the Message interface implementation.
-// See Serialize for encoding transactions to be stored to disk, such as in a
-// database, as opposed to encoding transactions for the wire.
-func (msg *MsgTx) BtcEncode(w io.Writer, pver uint32, enc MessageEncoding) error {
-    err := binarySerializer.PutUint32(w, littleEndian, uint32(msg.Version))
-    if err != nil {
-        return err
-    }
-
-    // If the encoding version is set to WitnessEncoding, and the Flags
-    // field for the MsgTx aren't 0x00, then this indicates the transaction
-    // is to be encoded using the new witness inclusionary structure
-    // defined in BIP0144.
-    doWitness := enc == WitnessEncoding && msg.HasWitness()
-    if doWitness {
-        // After the txn's Version field, we include two additional
-        // bytes specific to the witness encoding. The first byte is an
-        // always 0x00 marker byte, which allows decoders to
-        // distinguish a serialized transaction with witnesses from a
-        // regular (legacy) one. The second byte is the Flag field,
-        // which at the moment is always 0x01, but may be extended in
-        // the future to accommodate auxiliary non-committed fields.
-        if _, err := w.Write(witessMarkerBytes); err != nil {
-            return err
-        }
-    }
-
-    count := uint64(len(msg.TxIn))
-    err = WriteVarInt(w, pver, count)
-    if err != nil {
-        return err
-    }
-
-    for _, ti := range msg.TxIn {
-        err = writeTxIn(w, pver, msg.Version, ti)
-        if err != nil {
-            return err
-        }
-    }
-
-    count = uint64(len(msg.TxOut))
-    err = WriteVarInt(w, pver, count)
-    if err != nil {
-        return err
-    }
-
-    for _, to := range msg.TxOut {
-        err = WriteTxOut(w, pver, msg.Version, to)
-        if err != nil {
-            return err
-        }
-    }
-
-    // If this transaction is a witness transaction, and the witness
-    // encoded is desired, then encode the witness for each of the inputs
-    // within the transaction.
-    if doWitness {
-        for _, ti := range msg.TxIn {
-            err = writeTxWitness(w, pver, msg.Version, ti.Witness)
-            if err != nil {
-                return err
-            }
-        }
-    }
-
-    return binarySerializer.PutUint32(w, littleEndian, msg.LockTime)
-}
-
-// writeTxWitness encodes the bitcoin protocol encoding for a transaction
-// input's witness into to w.
-func writeTxWitness(w io.Writer, pver uint32, version int32, wit [][]byte) error {
-    err := WriteVarInt(w, pver, uint64(len(wit)))
-    if err != nil {
-        return err
-    }
-    for _, item := range wit {
-        err = WriteVarBytes(w, pver, item)
-        if err != nil {
-            return err
-        }
-    }
     return nil
 }
 ```
@@ -1081,5 +891,1136 @@ func (b *BlockChain) addOrphanBlock(block *btcutil.Block) {
     // Add to previous hash lookup index for faster dependency lookups.
     prevHash := &block.MsgBlock().Header.PrevBlock
     b.prevOrphans[*prevHash] = append(b.prevOrphans[*prevHash], oBlock)
+}
+```
+
+### 1.2.5. maybeAcceptBlock
+
+maybeAcceptBlock也是一个重点方法，用于检查区块是否在bestchain。并且保存区块到数据库
+
+```go
+// maybeAcceptBlock potentially accepts a block into the block chain and, if
+// accepted, returns whether or not it is on the main chain.  It performs
+// several validation checks which depend on its position within the block chain
+// before adding it.  The block is expected to have already gone through
+// ProcessBlock before calling this function with it.
+//
+// The flags are also passed to checkBlockContext and connectBestChain.  See
+// their documentation for how the flags modify their behavior.
+//
+// This function MUST be called with the chain state lock held (for writes).
+func (b *BlockChain) maybeAcceptBlock(block *btcutil.Block, flags BehaviorFlags) (bool, error) {
+    // The height of this block is one more than the referenced previous
+    // block.
+    prevHash := &block.MsgBlock().Header.PrevBlock
+    prevNode := b.index.LookupNode(prevHash)
+    if prevNode == nil {
+        str := fmt.Sprintf("previous block %s is unknown", prevHash)
+        return false, ruleError(ErrPreviousBlockUnknown, str)
+    } else if b.index.NodeStatus(prevNode).KnownInvalid() {
+        str := fmt.Sprintf("previous block %s is known to be invalid", prevHash)
+        return false, ruleError(ErrInvalidAncestorBlock, str)
+    }
+
+    blockHeight := prevNode.height + 1
+    block.SetHeight(blockHeight)
+
+    // The block must pass all of the validation rules which depend on the
+    // position of the block within the block chain.
+    err := b.checkBlockContext(block, prevNode, flags)
+    if err != nil {
+        return false, err
+    }
+
+    // Insert the block into the database if it's not already there.  Even
+    // though it is possible the block will ultimately fail to connect, it
+    // has already passed all proof-of-work and validity tests which means
+    // it would be prohibitively expensive for an attacker to fill up the
+    // disk with a bunch of blocks that fail to connect.  This is necessary
+    // since it allows block download to be decoupled from the much more
+    // expensive connection logic.  It also has some other nice properties
+    // such as making blocks that never become part of the main chain or
+    // blocks that fail to connect available for further analysis.
+    err = b.db.Update(func(dbTx database.Tx) error {
+        return dbStoreBlock(dbTx, block)
+    })
+    if err != nil {
+        return false, err
+    }
+
+    // Create a new block node for the block and add it to the node index. Even
+    // if the block ultimately gets connected to the main chain, it starts out
+    // on a side chain.
+    blockHeader := &block.MsgBlock().Header
+    newNode := newBlockNode(blockHeader, prevNode)
+    newNode.status = statusDataStored
+
+    b.index.AddNode(newNode)
+    err = b.index.flushToDB()
+    if err != nil {
+        return false, err
+    }
+
+    // Connect the passed block to the chain while respecting proper chain
+    // selection according to the chain with the most proof of work.  This
+    // also handles validation of the transaction scripts.
+    isMainChain, err := b.connectBestChain(newNode, block, flags)
+    if err != nil {
+        return false, err
+    }
+
+    // Notify the caller that the new block was accepted into the block
+    // chain.  The caller would typically want to react by relaying the
+    // inventory to other peers.
+    b.chainLock.Unlock()
+    b.sendNotification(NTBlockAccepted, block)
+    b.chainLock.Lock()
+
+    return isMainChain, nil
+}
+```
+
+>主要流程：
+
+1. checkBlockContext(block, prevNode, flags)
+2. dbStoreBlock(dbTx, block)
+    1. 保存区块到数据据中
+3. newBlockNode(blockHeader, prevNode)
+4. index.AddNode(newNode)
+5. connectBestChain(newNode, block, flags)
+6. sendNotification(NTBlockAccepted, block)
+    1. 发送NTBlockAccepted通知,在上一章中提过，发送这个通知，会传播这个区块。
+
+#### 1.2.5.1. checkBlockContext
+
+跳过前面几个很好理解的检查，看下checkBlockContext做了什么事。可以看到如果为BFFastAdd模式，只会调用checkBlockHeaderContext。
+
+1. checkBlockHeaderContext 检查区块头内容。
+2. IsFinalizedTransaction检查是否有交易是未完成的。检查lockTime和Sequence。
+3. 当高度超过BIP0034Height时，在coinbase中会添加当前区块的高度。检查这个高度是否正确。
+4. 检查segwit是否激活,如果激活了就验证segwit。
+5. 检查高度是否超过MaxBlockWeight。
+
+```go
+// checkBlockContext peforms several validation checks on the block which depend
+// on its position within the block chain.
+//
+// The flags modify the behavior of this function as follows:
+//  - BFFastAdd: The transaction are not checked to see if they are finalized
+//    and the somewhat expensive BIP0034 validation is not performed.
+//
+// The flags are also passed to checkBlockHeaderContext.  See its documentation
+// for how the flags modify its behavior.
+//
+// This function MUST be called with the chain state lock held (for writes).
+func (b *BlockChain) checkBlockContext(block *btcutil.Block, prevNode *blockNode, flags BehaviorFlags) error {
+    // Perform all block header related validation checks.
+    header := &block.MsgBlock().Header
+    err := b.checkBlockHeaderContext(header, prevNode, flags)
+    if err != nil {
+        return err
+    }
+
+    fastAdd := flags&BFFastAdd == BFFastAdd
+    if !fastAdd {
+        // Obtain the latest state of the deployed CSV soft-fork in
+        // order to properly guard the new validation behavior based on
+        // the current BIP 9 version bits state.
+        csvState, err := b.deploymentState(prevNode, chaincfg.DeploymentCSV)
+        if err != nil {
+            return err
+        }
+
+        // Once the CSV soft-fork is fully active, we'll switch to
+        // using the current median time past of the past block's
+        // timestamps for all lock-time based checks.
+        blockTime := header.Timestamp
+        if csvState == ThresholdActive {
+            blockTime = prevNode.CalcPastMedianTime()
+        }
+
+        // The height of this block is one more than the referenced
+        // previous block.
+        blockHeight := prevNode.height + 1
+
+        // Ensure all transactions in the block are finalized.
+        for _, tx := range block.Transactions() {
+            if !IsFinalizedTransaction(tx, blockHeight,
+                blockTime) {
+
+                str := fmt.Sprintf("block contains unfinalized "+
+                    "transaction %v", tx.Hash())
+                return ruleError(ErrUnfinalizedTx, str)
+            }
+        }
+
+        // Ensure coinbase starts with serialized block heights for
+        // blocks whose version is the serializedHeightVersion or newer
+        // once a majority of the network has upgraded.  This is part of
+        // BIP0034.
+        if ShouldHaveSerializedBlockHeight(header) &&
+            blockHeight >= b.chainParams.BIP0034Height {
+
+            coinbaseTx := block.Transactions()[0]
+            err := checkSerializedHeight(coinbaseTx, blockHeight)
+            if err != nil {
+                return err
+            }
+        }
+
+        // Query for the Version Bits state for the segwit soft-fork
+        // deployment. If segwit is active, we'll switch over to
+        // enforcing all the new rules.
+        segwitState, err := b.deploymentState(prevNode,
+            chaincfg.DeploymentSegwit)
+        if err != nil {
+            return err
+        }
+
+        // If segwit is active, then we'll need to fully validate the
+        // new witness commitment for adherence to the rules.
+        if segwitState == ThresholdActive {
+            // Validate the witness commitment (if any) within the
+            // block.  This involves asserting that if the coinbase
+            // contains the special commitment output, then this
+            // merkle root matches a computed merkle root of all
+            // the wtxid's of the transactions within the block. In
+            // addition, various other checks against the
+            // coinbase's witness stack.
+            if err := ValidateWitnessCommitment(block); err != nil {
+                return err
+            }
+
+            // Once the witness commitment, witness nonce, and sig
+            // op cost have been validated, we can finally assert
+            // that the block's weight doesn't exceed the current
+            // consensus parameter.
+            blockWeight := GetBlockWeight(block)
+            if blockWeight > MaxBlockWeight {
+                str := fmt.Sprintf("block's weight metric is "+
+                    "too high - got %v, max %v",
+                    blockWeight, MaxBlockWeight)
+                return ruleError(ErrBlockWeightTooHigh, str)
+            }
+        }
+    }
+
+    return nil
+}
+```
+
+#### 1.2.5.2. checkBlockHeaderContext
+
+在checkBlockContext中会验证区块头内容。这里的验证就用到了BFFastAdd。为true时，会跳过一些验证。
+
+1. 根据上一个区块算出下一个区块的难度。如果不相等说明区块无效。
+2. 判断block.header.Timestamp是否在上一区块的medianTime之后。
+3. 如果区块高度正好在一个checkpoint上，就判断hash是否相等。
+4. 判断高度是否比上一个checkpointNode大
+5. 版本更新点区块高度检查
+
+```go
+// checkBlockHeaderContext performs several validation checks on the block header
+// which depend on its position within the block chain.
+//
+// The flags modify the behavior of this function as follows:
+//  - BFFastAdd: All checks except those involving comparing the header against
+//    the checkpoints are not performed.
+//
+// This function MUST be called with the chain state lock held (for writes).
+func (b *BlockChain) checkBlockHeaderContext(header *wire.BlockHeader, prevNode *blockNode, flags BehaviorFlags) error {
+    fastAdd := flags&BFFastAdd == BFFastAdd
+    if !fastAdd {
+        // Ensure the difficulty specified in the block header matches
+        // the calculated difficulty based on the previous block and
+        // difficulty retarget rules.
+        expectedDifficulty, err := b.calcNextRequiredDifficulty(prevNode,
+            header.Timestamp)
+        if err != nil {
+            return err
+        }
+        blockDifficulty := header.Bits
+        if blockDifficulty != expectedDifficulty {
+            str := "block difficulty of %d is not the expected value of %d"
+            str = fmt.Sprintf(str, blockDifficulty, expectedDifficulty)
+            return ruleError(ErrUnexpectedDifficulty, str)
+        }
+
+        // Ensure the timestamp for the block header is after the
+        // median time of the last several blocks (medianTimeBlocks).
+        medianTime := prevNode.CalcPastMedianTime()
+        if !header.Timestamp.After(medianTime) {
+            str := "block timestamp of %v is not after expected %v"
+            str = fmt.Sprintf(str, header.Timestamp, medianTime)
+            return ruleError(ErrTimeTooOld, str)
+        }
+    }
+
+    // The height of this block is one more than the referenced previous
+    // block.
+    blockHeight := prevNode.height + 1
+
+    // Ensure chain matches up to predetermined checkpoints.
+    blockHash := header.BlockHash()
+    if !b.verifyCheckpoint(blockHeight, &blockHash) {
+        str := fmt.Sprintf("block at height %d does not match "+
+            "checkpoint hash", blockHeight)
+        return ruleError(ErrBadCheckpoint, str)
+    }
+
+    // Find the previous checkpoint and prevent blocks which fork the main
+    // chain before it.  This prevents storage of new, otherwise valid,
+    // blocks which build off of old blocks that are likely at a much easier
+    // difficulty and therefore could be used to waste cache and disk space.
+    checkpointNode, err := b.findPreviousCheckpoint()
+    if err != nil {
+        return err
+    }
+    if checkpointNode != nil && blockHeight < checkpointNode.height {
+        str := fmt.Sprintf("block at height %d forks the main chain "+
+            "before the previous checkpoint at height %d",
+            blockHeight, checkpointNode.height)
+        return ruleError(ErrForkTooOld, str)
+    }
+
+    // Reject outdated block versions once a majority of the network
+    // has upgraded.  These were originally voted on by BIP0034,
+    // BIP0065, and BIP0066. 
+    params := b.chainParams
+    if header.Version < 2 && blockHeight >= params.BIP0034Height ||
+        header.Version < 3 && blockHeight >= params.BIP0066Height ||
+        header.Version < 4 && blockHeight >= params.BIP0065Height {
+
+        str := "new blocks with version %d are no longer valid"
+        str = fmt.Sprintf(str, header.Version)
+        return ruleError(ErrBlockVersionTooOld, str)
+    }
+
+    return nil
+}
+```
+
+### 1.2.6. dbStoreBlock之block.Bytes()
+
+dbStoreBlock 会先检查它是否存在，然后调用dbTx存储区块。我们主要看下这个block是如何序列化为bytes。
+
+```go
+// dbStoreBlock stores the provided block in the database if it is not already
+// there. The full block data is written to ffldb.
+func dbStoreBlock(dbTx database.Tx, block *btcutil.Block) error {
+    hasBlock, err := dbTx.HasBlock(block.Hash())
+    if err != nil {
+        return err
+    }
+    if hasBlock {
+        return nil
+    }
+    return dbTx.StoreBlock(block)
+}
+
+// This function is part of the database.Tx interface implementation.
+func (tx *transaction) StoreBlock(block *btcutil.Block) error {
+    // Ensure transaction state is valid.
+    if err := tx.checkClosed(); err != nil {
+        return err
+    }
+
+    // Ensure the transaction is writable.
+    if !tx.writable {
+        str := "store block requires a writable database transaction"
+        return makeDbErr(database.ErrTxNotWritable, str, nil)
+    }
+
+    // Reject the block if it already exists.
+    blockHash := block.Hash()
+    if tx.hasBlock(blockHash) {
+        str := fmt.Sprintf("block %s already exists", blockHash)
+        return makeDbErr(database.ErrBlockExists, str, nil)
+    }
+
+    blockBytes, err := block.Bytes()
+    if err != nil {
+        str := fmt.Sprintf("failed to get serialized bytes for block %s",
+            blockHash)
+        return makeDbErr(database.ErrDriverSpecific, str, err)
+    }
+
+    // Add the block to be stored to the list of pending blocks to store
+    // when the transaction is committed.  Also, add it to pending blocks
+    // map so it is easy to determine the block is pending based on the
+    // block hash.
+    if tx.pendingBlocks == nil {
+        tx.pendingBlocks = make(map[chainhash.Hash]int)
+    }
+    tx.pendingBlocks[*blockHash] = len(tx.pendingBlockData)
+    tx.pendingBlockData = append(tx.pendingBlockData, pendingBlock{
+        hash:  blockHash,
+        bytes: blockBytes,
+    })
+    log.Tracef("Added block %s to pending blocks", blockHash)
+
+    return nil
+}
+```
+
+ffldb自己实现的事务，所以数据不会直接保存，而是先放到缓存中。我们看下block.Bytes()逻辑。
+
+```go
+// Bytes returns the serialized bytes for the Block.  This is equivalent to
+// calling Serialize on the underlying wire.MsgBlock, however it caches the
+// result so subsequent calls are more efficient.
+func (b *Block) Bytes() ([]byte, error) {
+    // Return the cached serialized bytes if it has already been generated.
+    if len(b.serializedBlock) != 0 {
+        return b.serializedBlock, nil
+    }
+
+    // Serialize the MsgBlock.
+    w := bytes.NewBuffer(make([]byte, 0, b.msgBlock.SerializeSize()))
+    err := b.msgBlock.Serialize(w)
+    if err != nil {
+        return nil, err
+    }
+    serializedBlock := w.Bytes()
+
+    // Cache the serialized bytes and return them.
+    b.serializedBlock = serializedBlock
+    return serializedBlock, nil
+}
+
+func (msg *MsgBlock) Serialize(w io.Writer) error {
+    // At the current time, there is no difference between the wire encoding
+    // at protocol version 0 and the stable long-term storage format.  As
+    // a result, make use of BtcEncode.
+    //
+    // Passing WitnessEncoding as the encoding type here indicates that
+    // each of the transactions should be serialized using the witness
+    // serialization structure defined in BIP0141.
+    return msg.BtcEncode(w, 0, WitnessEncoding)
+}
+
+```
+
+可以看到，这里使用的是带有Witness的序列化。
+
+#### 1.2.6.1. 序列化常识
+
+> **序列化一个基本类型，如uint32代码：**
+
+```go
+func (littleEndian) PutUint32(b []byte, v uint32) {
+    _ = b[3] // early bounds check to guarantee safety of writes below
+    b[0] = byte(v)
+    b[1] = byte(v >> 8)
+    b[2] = byte(v >> 16)
+    b[3] = byte(v >> 24)
+}
+
+func (bigEndian) PutUint32(b []byte, v uint32) {
+    _ = b[3] // early bounds check to guarantee safety of writes below
+    b[0] = byte(v >> 24)
+    b[1] = byte(v >> 16)
+    b[2] = byte(v >> 8)
+    b[3] = byte(v)
+}
+```
+
+小头是依次从低到高取8位放到b[0]到b[3]。大头相反。
+
+>**序列化Bytes**
+
+```go
+func WriteVarBytes(w io.Writer, pver uint32, bytes []byte) error {
+    slen := uint64(len(bytes))
+    err := WriteVarInt(w, pver, slen)
+    if err != nil {
+        return err
+    }
+
+    _, err = w.Write(bytes)
+    return err
+}
+```
+
+bytes由于大小不固定，因此要先写bytes的长度（占8bytes），然后再写bytes。
+
+#### 1.2.6.2. BtcEncode
+
+encode一个block。依次是处理header，然后处理交易。
+结构如下：
+
+- Version  4bytes
+- PrevBlockHash 4bytes
+- MerkleRootHash 4bytes
+- Timestamp.Unix() 4bytes
+- Bits 4bytes
+- Nonce 4bytes
+- 交易数量 8bytes
+- 所有交易数据
+
+```go
+// BtcEncode encodes the receiver to w using the bitcoin protocol encoding.
+// This is part of the Message interface implementation.
+// See Serialize for encoding blocks to be stored to disk, such as in a
+// database, as opposed to encoding blocks for the wire.
+func (msg *MsgBlock) BtcEncode(w io.Writer, pver uint32, enc MessageEncoding) error {
+    err := writeBlockHeader(w, pver, &msg.Header)
+    if err != nil {
+        return err
+    }
+
+    err = WriteVarInt(w, pver, uint64(len(msg.Transactions)))
+    if err != nil {
+        return err
+    }
+
+    for _, tx := range msg.Transactions {
+        err = tx.BtcEncode(w, pver, enc)
+        if err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
+```
+
+> **writeBlockHeader**
+
+```go
+// writeBlockHeader writes a bitcoin block header to w.  See Serialize for
+// encoding block headers to be stored to disk, such as in a database, as
+// opposed to encoding for the wire.
+func writeBlockHeader(w io.Writer, pver uint32, bh *BlockHeader) error {
+    sec := uint32(bh.Timestamp.Unix())
+    return writeElements(w, bh.Version, &bh.PrevBlock, &bh.MerkleRoot,
+        sec, bh.Bits, bh.Nonce)
+}
+
+// writeElements writes multiple items to w.  It is equivalent to multiple
+// calls to writeElement.
+func writeElements(w io.Writer, elements ...interface{}) error {
+    for _, element := range elements {
+        err := writeElement(w, element)
+        if err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+> **MsgTx.BtcEncode**
+
+>**带witness数据的交encode如下：**
+
+- tx.Version 4bytes
+- witessMarkerBytes 2bytes
+- TxIn数量 8bytes
+- 所有的TxIn
+    - txin.OutPointHash 4bytes
+    - txin.Index 4bytes
+    - txin.SignatureScript Nbytes
+    - txin.Sequence 4bytes
+- TxOut数量 8bytes
+- 所有的TxOut
+    - txout.Value 8bytes
+    - txout.PkScript Nbytes
+
+> **tips:在一个带有witness的txIn中，SignatureScript为空。**
+
+```go
+// witnessMarkerBytes are a pair of bytes specific to the witness encoding. If
+// this sequence is encoutered, then it indicates a transaction has iwtness
+// data. The first byte is an always 0x00 marker byte, which allows decoders to
+// distinguish a serialized transaction with witnesses from a regular (legacy)
+// one. The second byte is the Flag field, which at the moment is always 0x01,
+// but may be extended in the future to accommodate auxiliary non-committed
+// fields.
+var witessMarkerBytes = []byte{0x00, 0x01}
+
+// BtcEncode encodes the receiver to w using the bitcoin protocol encoding.
+// This is part of the Message interface implementation.
+// See Serialize for encoding transactions to be stored to disk, such as in a
+// database, as opposed to encoding transactions for the wire.
+func (msg *MsgTx) BtcEncode(w io.Writer, pver uint32, enc MessageEncoding) error {
+    err := binarySerializer.PutUint32(w, littleEndian, uint32(msg.Version))
+    if err != nil {
+        return err
+    }
+
+    // If the encoding version is set to WitnessEncoding, and the Flags
+    // field for the MsgTx aren't 0x00, then this indicates the transaction
+    // is to be encoded using the new witness inclusionary structure
+    // defined in BIP0144.
+    doWitness := enc == WitnessEncoding && msg.HasWitness()
+    if doWitness {
+        // After the txn's Version field, we include two additional
+        // bytes specific to the witness encoding. The first byte is an
+        // always 0x00 marker byte, which allows decoders to
+        // distinguish a serialized transaction with witnesses from a
+        // regular (legacy) one. The second byte is the Flag field,
+        // which at the moment is always 0x01, but may be extended in
+        // the future to accommodate auxiliary non-committed fields.
+        if _, err := w.Write(witessMarkerBytes); err != nil {
+            return err
+        }
+    }
+
+    count := uint64(len(msg.TxIn))
+    err = WriteVarInt(w, pver, count)
+    if err != nil {
+        return err
+    }
+
+    for _, ti := range msg.TxIn {
+        err = writeTxIn(w, pver, msg.Version, ti)
+        if err != nil {
+            return err
+        }
+    }
+
+    count = uint64(len(msg.TxOut))
+    err = WriteVarInt(w, pver, count)
+    if err != nil {
+        return err
+    }
+
+    for _, to := range msg.TxOut {
+        err = WriteTxOut(w, pver, msg.Version, to)
+        if err != nil {
+            return err
+        }
+    }
+
+    // If this transaction is a witness transaction, and the witness
+    // encoded is desired, then encode the witness for each of the inputs
+    // within the transaction.
+    if doWitness {
+        for _, ti := range msg.TxIn {
+            err = writeTxWitness(w, pver, msg.Version, ti.Witness)
+            if err != nil {
+                return err
+            }
+        }
+    }
+
+    return binarySerializer.PutUint32(w, littleEndian, msg.LockTime)
+}
+
+// writeTxIn encodes ti to the bitcoin protocol encoding for a transaction
+// input (TxIn) to w.
+func writeTxIn(w io.Writer, pver uint32, version int32, ti *TxIn) error {
+    err := writeOutPoint(w, pver, version, &ti.PreviousOutPoint)
+    if err != nil {
+        return err
+    }
+
+    err = WriteVarBytes(w, pver, ti.SignatureScript)
+    if err != nil {
+        return err
+    }
+
+    return binarySerializer.PutUint32(w, littleEndian, ti.Sequence)
+}
+
+// writeOutPoint encodes op to the bitcoin protocol encoding for an OutPoint
+// to w.
+func writeOutPoint(w io.Writer, pver uint32, version int32, op *OutPoint) error {
+    _, err := w.Write(op.Hash[:])
+    if err != nil {
+        return err
+    }
+
+    return binarySerializer.PutUint32(w, littleEndian, op.Index)
+}
+
+func WriteTxOut(w io.Writer, pver uint32, version int32, to *TxOut) error {
+    err := binarySerializer.PutUint64(w, littleEndian, uint64(to.Value))
+    if err != nil {
+        return err
+    }
+
+    return WriteVarBytes(w, pver, to.PkScript)
+}
+
+// writeTxWitness encodes the bitcoin protocol encoding for a transaction
+// input's witness into to w.
+func writeTxWitness(w io.Writer, pver uint32, version int32, wit [][]byte) error {
+    err := WriteVarInt(w, pver, uint64(len(wit)))
+    if err != nil {
+        return err
+    }
+    for _, item := range wit {
+        err = WriteVarBytes(w, pver, item)
+        if err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+### 1.2.7. newBlockNode
+
+newBlockNode会创建一个新的blockNode对象。这个对象会维护在内存中。这个对象不包括交易数据。
+
+```go
+// newBlockNode returns a new block node for the given block header and parent
+// node, calculating the height and workSum from the respective fields on the
+// parent. This function is NOT safe for concurrent access.
+func newBlockNode(blockHeader *wire.BlockHeader, parent *blockNode) *blockNode {
+    var node blockNode
+    initBlockNode(&node, blockHeader, parent)
+    return &node
+}
+
+// initBlockNode initializes a block node from the given header and parent node,
+// calculating the height and workSum from the respective fields on the parent.
+// This function is NOT safe for concurrent access.  It must only be called when
+// initially creating a node.
+func initBlockNode(node *blockNode, blockHeader *wire.BlockHeader, parent *blockNode) {
+    *node = blockNode{
+        hash:       blockHeader.BlockHash(),
+        workSum:    CalcWork(blockHeader.Bits),
+        version:    blockHeader.Version,
+        bits:       blockHeader.Bits,
+        nonce:      blockHeader.Nonce,
+        timestamp:  blockHeader.Timestamp.Unix(),
+        merkleRoot: blockHeader.MerkleRoot,
+    }
+    if parent != nil {
+        node.parent = parent
+        node.height = parent.height + 1
+        node.workSum = node.workSum.Add(parent.workSum, node.workSum)
+    }
+}
+
+// CalcWork calculates a work value from difficulty bits.  Bitcoin increases
+// the difficulty for generating a block by decreasing the value which the
+// generated hash must be less than.  This difficulty target is stored in each
+// block header using a compact representation as described in the documentation
+// for CompactToBig.  The main chain is selected by choosing the chain that has
+// the most proof of work (highest difficulty).  Since a lower target difficulty
+// value equates to higher actual difficulty, the work value which will be
+// accumulated must be the inverse of the difficulty.  Also, in order to avoid
+// potential division by zero and really small floating point numbers, the
+// result adds 1 to the denominator and multiplies the numerator by 2^256.
+func CalcWork(bits uint32) *big.Int {
+    // Return a work value of zero if the passed difficulty bits represent
+    // a negative number. Note this should not happen in practice with valid
+    // blocks, but an invalid block could trigger it.
+    difficultyNum := CompactToBig(bits)
+    if difficultyNum.Sign() <= 0 {
+        return big.NewInt(0)
+    }
+
+    // (1 << 256) / (difficultyNum + 1)
+    denominator := new(big.Int).Add(difficultyNum, bigOne)
+    return new(big.Int).Div(oneLsh256, denominator)
+}
+```
+
+### 1.2.8. AddNode
+
+上面创建了新的blocknode之后，调用AddNode添加到索引中，然后会调用flushToDB保存到db中。
+
+```go
+// AddNode adds the provided node to the block index and marks it as dirty.
+// Duplicate entries are not checked so it is up to caller to avoid adding them.
+//
+// This function is safe for concurrent access.
+func (bi *blockIndex) AddNode(node *blockNode) {
+    bi.Lock()
+    bi.addNode(node)
+    bi.dirty[node] = struct{}{}
+    bi.Unlock()
+}
+
+func (bi *blockIndex) addNode(node *blockNode) {
+    bi.index[node.hash] = node
+}
+
+// flushToDB writes all dirty block nodes to the database. If all writes
+// succeed, this clears the dirty set.
+func (bi *blockIndex) flushToDB() error {
+    bi.Lock()
+    if len(bi.dirty) == 0 {
+        bi.Unlock()
+        return nil
+    }
+
+    err := bi.db.Update(func(dbTx database.Tx) error {
+        for node := range bi.dirty {
+            err := dbStoreBlockNode(dbTx, node)
+            if err != nil {
+                return err
+            }
+        }
+        return nil
+    })
+
+    // If write was successful, clear the dirty set.
+    if err == nil {
+        bi.dirty = make(map[*blockNode]struct{})
+    }
+
+    bi.Unlock()
+    return err
+}
+
+// dbStoreBlockNode stores the block header and validation status to the block
+// index bucket. This overwrites the current entry if there exists one.
+func dbStoreBlockNode(dbTx database.Tx, node *blockNode) error {
+    // Serialize block data to be stored.
+    w := bytes.NewBuffer(make([]byte, 0, blockHdrSize+1))
+    header := node.Header()
+    err := header.Serialize(w)
+    if err != nil {
+        return err
+    }
+    err = w.WriteByte(byte(node.status))
+    if err != nil {
+        return err
+    }
+    value := w.Bytes()
+
+    // Write block header data to block index bucket.
+    blockIndexBucket := dbTx.Metadata().Bucket(blockIndexBucketName)
+    key := blockIndexKey(&node.hash, uint32(node.height))
+    return blockIndexBucket.Put(key, value)
+}
+```
+
+>通过上面的代码可以看出来，它就干了两件事
+
+1. 维护到内存的索引bi.index[node.hash] = node
+2. node保存到blockIndexBucket中
+
+
+## 1.3. 通用方法说明
+
+### 1.3.1. BuildMerkleTreeStore
+
+>区块头中包括所有交易生成的MerkleTree root节点。同时MerkleTree也是blockchain技术中很重要的一个点。
+
+MerkleTree是满二叉树。由于交易的hash全部在树的根节点中，可能会不足，所以要先计算出树的根节点数量。而二叉树的根的数量就是2的n-1次方，n为高度。nextPoT就是根节点数量。得到根节点数量就很容易算出arraySize。
+
+>在生成树之前，要先计算交易的hash值，并添加到数组中merkles，其中有三个类型:
+
+1. coinbase 为zeroHash
+2. witness(隔离见证)交易，会生成带见证数据的hash
+3. 正常hash
+
+在根生成结束之后offset := nextPoT，说明右边空的节点直接当成空处理。比如只有三个节点
+
+最后从数组倒数第二层开始生成根节点的父节点数据，也就是从offset开始。比如处理到h1和h2时，会生成h12。处理到h3和h4时，如果h4为空，就当h4值等于h3，生成h34。假如有6个交易，也就是说在生成h78时，由于h7为空，所以h78直接为空。
+
+```go
+// BuildMerkleTreeStore creates a merkle tree from a slice of transactions,
+// stores it using a linear array, and returns a slice of the backing array.  A
+// linear array was chosen as opposed to an actual tree structure since it uses
+// about half as much memory.  The following describes a merkle tree and how it
+// is stored in a linear array.
+//
+// A merkle tree is a tree in which every non-leaf node is the hash of its
+// children nodes.  A diagram depicting how this works for bitcoin transactions
+// where h(x) is a double sha256 follows:
+//
+//	         root = h1234 = h(h12 + h34)
+//	        /                           \
+//	  h12 = h(h1 + h2)            h34 = h(h3 + h4)
+//	   /            \              /            \
+//	h1 = h(tx1)  h2 = h(tx2)    h3 = h(tx3)  h4 = h(tx4)
+//
+// The above stored as a linear array is as follows:
+//
+// 	[h1 h2 h3 h4 h12 h34 root]
+//
+// As the above shows, the merkle root is always the last element in the array.
+//
+// The number of inputs is not always a power of two which results in a
+// balanced tree structure as above.  In that case, parent nodes with no
+// children are also zero and parent nodes with only a single left node
+// are calculated by concatenating the left node with itself before hashing.
+// Since this function uses nodes that are pointers to the hashes, empty nodes
+// will be nil.
+//
+// The additional bool parameter indicates if we are generating the merkle tree
+// using witness transaction id's rather than regular transaction id's. This
+// also presents an additional case wherein the wtxid of the coinbase transaction
+// is the zeroHash.
+func BuildMerkleTreeStore(transactions []*btcutil.Tx, witness bool) []*chainhash.Hash {
+    // Calculate how many entries are required to hold the binary merkle
+    // tree as a linear array and create an array of that size.
+    nextPoT := nextPowerOfTwo(len(transactions))
+    arraySize := nextPoT*2 - 1
+    merkles := make([]*chainhash.Hash, arraySize)
+
+    // Create the base transaction hashes and populate the array with them.
+    for i, tx := range transactions {
+        // If we're computing a witness merkle root, instead of the
+        // regular txid, we use the modified wtxid which includes a
+        // transaction's witness data within the digest. Additionally,
+        // the coinbase's wtxid is all zeroes.
+        switch {
+        case witness && i == 0:
+            var zeroHash chainhash.Hash
+            merkles[i] = &zeroHash
+        case witness:
+            wSha := tx.MsgTx().WitnessHash()
+            merkles[i] = &wSha
+        default:
+            merkles[i] = tx.Hash()
+        }
+
+    }
+
+    // Start the array offset after the last transaction and adjusted to the
+    // next power of two.
+    offset := nextPoT
+    for i := 0; i < arraySize-1; i += 2 {
+        switch {
+        // When there is no left child node, the parent is nil too.
+        case merkles[i] == nil:
+            merkles[offset] = nil
+
+        // When there is no right child, the parent is generated by
+        // hashing the concatenation of the left child with itself.
+        case merkles[i+1] == nil:
+            newHash := HashMerkleBranches(merkles[i], merkles[i])
+            merkles[offset] = newHash
+
+        // The normal case sets the parent node to the double sha256
+        // of the concatentation of the left and right children.
+        default:
+            newHash := HashMerkleBranches(merkles[i], merkles[i+1])
+            merkles[offset] = newHash
+        }
+        offset++
+    }
+
+    return merkles
+}
+```
+
+>看下BtcEncode中有没有Witness处理区别，前部分，都差别不大，只是在版本后面添加了一个witessMarkerBytes标记。真正的witness数据是在txin和txout都写完之后，最后添加进入的。
+
+### 1.3.2. calcNextRequiredDifficulty
+
+```go
+// calcNextRequiredDifficulty calculates the required difficulty for the block
+// after the passed previous block node based on the difficulty retarget rules.
+// This function differs from the exported CalcNextRequiredDifficulty in that
+// the exported version uses the current best chain as the previous block node
+// while this function accepts any block node.
+func (b *BlockChain) calcNextRequiredDifficulty(lastNode *blockNode, newBlockTime time.Time) (uint32, error) {
+    // Genesis block.
+    if lastNode == nil {
+        return b.chainParams.PowLimitBits, nil
+    }
+
+    // Return the previous block's difficulty requirements if this block
+    // is not at a difficulty retarget interval.
+    if (lastNode.height+1)%b.blocksPerRetarget != 0 {
+        // For networks that support it, allow special reduction of the
+        // required difficulty once too much time has elapsed without
+        // mining a block.
+        if b.chainParams.ReduceMinDifficulty {
+            // Return minimum difficulty when more than the desired
+            // amount of time has elapsed without mining a block.
+            reductionTime := int64(b.chainParams.MinDiffReductionTime /
+                time.Second)
+            allowMinTime := lastNode.timestamp + reductionTime
+            if newBlockTime.Unix() > allowMinTime {
+                return b.chainParams.PowLimitBits, nil
+            }
+
+            // The block was mined within the desired timeframe, so
+            // return the difficulty for the last block which did
+            // not have the special minimum difficulty rule applied.
+            return b.findPrevTestNetDifficulty(lastNode), nil
+        }
+
+        // For the main network (or any unrecognized networks), simply
+        // return the previous block's difficulty requirements.
+        return lastNode.bits, nil
+    }
+
+    // Get the block node at the previous retarget (targetTimespan days
+    // worth of blocks).
+    firstNode := lastNode.RelativeAncestor(b.blocksPerRetarget - 1)
+    if firstNode == nil {
+        return 0, AssertError("unable to obtain previous retarget block")
+    }
+
+    // Limit the amount of adjustment that can occur to the previous
+    // difficulty.
+    actualTimespan := lastNode.timestamp - firstNode.timestamp
+    adjustedTimespan := actualTimespan
+    if actualTimespan < b.minRetargetTimespan {
+        adjustedTimespan = b.minRetargetTimespan
+    } else if actualTimespan > b.maxRetargetTimespan {
+        adjustedTimespan = b.maxRetargetTimespan
+    }
+
+    // Calculate new target difficulty as:
+    //  currentDifficulty * (adjustedTimespan / targetTimespan)
+    // The result uses integer division which means it will be slightly
+    // rounded down.  Bitcoind also uses integer division to calculate this
+    // result.
+    oldTarget := CompactToBig(lastNode.bits)
+    newTarget := new(big.Int).Mul(oldTarget, big.NewInt(adjustedTimespan))
+    targetTimeSpan := int64(b.chainParams.TargetTimespan / time.Second)
+    newTarget.Div(newTarget, big.NewInt(targetTimeSpan))
+
+    // Limit new value to the proof of work limit.
+    if newTarget.Cmp(b.chainParams.PowLimit) > 0 {
+        newTarget.Set(b.chainParams.PowLimit)
+    }
+
+    // Log new target difficulty and return it.  The new target logging is
+    // intentionally converting the bits back to a number instead of using
+    // newTarget since conversion to the compact representation loses
+    // precision.
+    newTargetBits := BigToCompact(newTarget)
+    log.Debugf("Difficulty retarget at block height %d", lastNode.height+1)
+    log.Debugf("Old target %08x (%064x)", lastNode.bits, oldTarget)
+    log.Debugf("New target %08x (%064x)", newTargetBits, CompactToBig(newTargetBits))
+    log.Debugf("Actual timespan %v, adjusted timespan %v, target timespan %v",
+        time.Duration(actualTimespan)*time.Second,
+        time.Duration(adjustedTimespan)*time.Second,
+        b.chainParams.TargetTimespan)
+
+    return newTargetBits, nil
+}
+```
+
+### 1.3.3. IsFinalizedTransaction
+
+如果lockTime小于LockTimeThreshold，表示锁定的是区块高度，小于这个高度说明交易还没有生效。同理，大于LockTimeThreshold表示时间。
+
+```go
+const LockTimeThreshold = 5e8
+
+// IsFinalizedTransaction determines whether or not a transaction is finalized.
+func IsFinalizedTransaction(tx *btcutil.Tx, blockHeight int32, blockTime time.Time) bool {
+    msgTx := tx.MsgTx()
+
+    // Lock time of zero means the transaction is finalized.
+    lockTime := msgTx.LockTime
+    if lockTime == 0 {
+        return true
+    }
+
+    // The lock time field of a transaction is either a block height at
+    // which the transaction is finalized or a timestamp depending on if the
+    // value is before the txscript.LockTimeThreshold.  When it is under the
+    // threshold it is a block height.
+    blockTimeOrHeight := int64(0)
+    if lockTime < txscript.LockTimeThreshold {
+        blockTimeOrHeight = int64(blockHeight)
+    } else {
+        blockTimeOrHeight = blockTime.Unix()
+    }
+    if int64(lockTime) < blockTimeOrHeight {
+        return true
+    }
+
+    // At this point, the transaction's lock time hasn't occurred yet, but
+    // the transaction might still be finalized if the sequence number
+    // for all transaction inputs is maxed out.
+    for _, txIn := range msgTx.TxIn {
+        if txIn.Sequence != math.MaxUint32 {
+            return false
+        }
+    }
+    return true
+}
+```
+
+### 1.3.4. ValidateWitnessCommitment
+
+激活witness之后，coinbase中会有witness数据。跳过基本检查之后。会从coinbaseTx中取出witnessCommitment，如果没有找到，那么所有交易中都不能有witness数据。取出32位的witnessNonce。再次调用BuildMerkleTreeStore生成tree,不过这次是要带上交易中的witness。最后合并witnessMerkleRoot和witnessNonce生成摘要与witnessCommitment对比。
+
+coinbaseTx中两个重要的内容：
+
+1. witnessCommitment 在其中一个TxOut中
+2. Witness 在 Tx[0]中
+
+```go
+// ValidateWitnessCommitment validates the witness commitment (if any) found
+// within the coinbase transaction of the passed block.
+func ValidateWitnessCommitment(blk *btcutil.Block) error {
+    // If the block doesn't have any transactions at all, then we won't be
+    // able to extract a commitment from the non-existent coinbase
+    // transaction. So we exit early here.
+    if len(blk.Transactions()) == 0 {
+        str := "cannot validate witness commitment of block without " +
+            "transactions"
+        return ruleError(ErrNoTransactions, str)
+    }
+
+    coinbaseTx := blk.Transactions()[0]
+    if len(coinbaseTx.MsgTx().TxIn) == 0 {
+        return ruleError(ErrNoTxInputs, "transaction has no inputs")
+    }
+
+    witnessCommitment, witnessFound := ExtractWitnessCommitment(coinbaseTx)
+
+    // If we can't find a witness commitment in any of the coinbase's
+    // outputs, then the block MUST NOT contain any transactions with
+    // witness data.
+    if !witnessFound {
+        for _, tx := range blk.Transactions() {
+            msgTx := tx.MsgTx()
+            if msgTx.HasWitness() {
+                str := fmt.Sprintf("block contains transaction with witness" +
+                    " data, yet no witness commitment present")
+                return ruleError(ErrUnexpectedWitness, str)
+            }
+        }
+        return nil
+    }
+
+    // At this point the block contains a witness commitment, so the
+    // coinbase transaction MUST have exactly one witness element within
+    // its witness data and that element must be exactly
+    // CoinbaseWitnessDataLen bytes.
+    coinbaseWitness := coinbaseTx.MsgTx().TxIn[0].Witness
+    if len(coinbaseWitness) != 1 {
+        str := fmt.Sprintf("the coinbase transaction has %d items in "+
+            "its witness stack when only one is allowed",
+            len(coinbaseWitness))
+        return ruleError(ErrInvalidWitnessCommitment, str)
+    }
+    witnessNonce := coinbaseWitness[0]
+    if len(witnessNonce) != CoinbaseWitnessDataLen {
+        str := fmt.Sprintf("the coinbase transaction witness nonce "+
+            "has %d bytes when it must be %d bytes",
+            len(witnessNonce), CoinbaseWitnessDataLen)
+        return ruleError(ErrInvalidWitnessCommitment, str)
+    }
+
+    // Finally, with the preliminary checks out of the way, we can check if
+    // the extracted witnessCommitment is equal to:
+    // SHA256(witnessMerkleRoot || witnessNonce). Where witnessNonce is the
+    // coinbase transaction's only witness item.
+    witnessMerkleTree := BuildMerkleTreeStore(blk.Transactions(), true)
+    witnessMerkleRoot := witnessMerkleTree[len(witnessMerkleTree)-1]
+
+    var witnessPreimage [chainhash.HashSize * 2]byte
+    copy(witnessPreimage[:], witnessMerkleRoot[:])
+    copy(witnessPreimage[chainhash.HashSize:], witnessNonce)
+
+    computedCommitment := chainhash.DoubleHashB(witnessPreimage[:])
+    if !bytes.Equal(computedCommitment, witnessCommitment) {
+        str := fmt.Sprintf("witness commitment does not match: "+
+            "computed %v, coinbase includes %v", computedCommitment,
+            witnessCommitment)
+        return ruleError(ErrWitnessCommitmentMismatch, str)
+    }
+
+    return nil
 }
 ```

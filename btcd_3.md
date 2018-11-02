@@ -6,19 +6,19 @@
     - [1.1. 简介](#11-简介)
         - [1.1.1. BlockChain](#111-blockchain)
         - [1.1.2. blockNode](#112-blocknode)
-        - [1.1.3.](#113)
     - [1.2. blockchain创建流程](#12-blockchain创建流程)
         - [1.2.1. Checkpoint索引](#121-checkpoint索引)
         - [1.2.2. New BlockChain](#122-new-blockchain)
-        - [1.2.3. chain状态初始化](#123-chain状态初始化)
-            - [1.2.3.1. 创建chainState](#1231-创建chainstate)
-            - [1.2.3.2. 加载chainState](#1232-加载chainstate)
+        - [1.2.3. initChainState](#123-initchainstate)
+            - [1.2.3.1. createChainState](#1231-createchainstate)
+            - [1.2.3.2. 加载链状态](#1232-加载链状态)
         - [1.2.4. UpgradeDbBuckets](#124-upgradedbbuckets)
         - [1.2.5. IndexManager初始化](#125-indexmanager初始化)
             - [1.2.5.1. transaction index](#1251-transaction-index)
             - [1.2.5.2. address index](#1252-address-index)
             - [1.2.5.3. committed filter index](#1253-committed-filter-index)
         - [1.2.6. initThresholdCaches](#126-initthresholdcaches)
+            - [1.2.6.1. isCurrent](#1261-iscurrent)
 
 <!-- /TOC -->
 
@@ -176,8 +176,6 @@ type blockNode struct {
 }
 ```
 
-### 1.1.3.  
-
 ## 1.2. blockchain创建流程
 
 >系统在启用时，在server.newServer()时会创建区块链对象，并做一些初始化工作。这里我用代码片段换掉代码，方便分析。
@@ -245,7 +243,7 @@ if len(config.Checkpoints) > 0 {
 
 这段代码建立了一个hash索引，方便后面处理。 
 
->主网Checkpoints配置(chaincfg/params.go)如下。
+>主网Checkpoints配置(chaincfg/params.go)如下。Checkpoint为检查点。这些区块是已经在主网生成了的。
 
 ```go
 // Checkpoints ordered from oldest to newest.
@@ -317,7 +315,7 @@ func newBlockIndex(db database.DB, chainParams *chaincfg.Params) *blockIndex {
 }
 ```
 
-### 1.2.3. chain状态初始化
+### 1.2.3. initChainState
 
 >**code_segment_3**
 
@@ -377,7 +375,7 @@ func (b *BlockChain) initChainState() error {
 >2. 否则，初始化相关数据
 >3. 版本更新导致的数据结构变动要处理
 
-#### 1.2.3.1. 创建chainState
+#### 1.2.3.1. createChainState
 
 ```go
 // createChainState initializes both the database and the chain state to the
@@ -483,15 +481,12 @@ func (b *BlockChain) createChainState() error {
 这个方法里，会生成创世区块。然后得到一些基本状态，包括numTxns，blockSize，blockWeight等。最后会生成一些索引的bucket等，最后保存区块到ffldb中。根据上面的代码，其实就可以看出保存一个区块有那些方面。
 
 1. 保存block头及状态到索引
-
 ```go
 // blockIndexBucketName is the name of the db bucket used to house to the
 // block headers and contextual information.
-blockIndexBucketName = []byte("blockheaderidx")    
+blockIndexBucketName = []byte("blockheaderidx")
 ```
-
 2. 添加区块索引(2个)  
-
 ```go
 // heightIndexBucketName is the name of the db bucket used to house to 
 // the block height -> block hash index.
@@ -501,9 +496,7 @@ heightIndexBucketName = []byte("heightidx")
 // block hash -> block height index.
 hashIndexBucketName = []byte("hashidx")
 ```
-
-3. 更新区块链状态  
-
+3. 更新区块链状态
 ```go
 // dbPutBestState uses an existing database transaction to update the best chain
 // state with the given parameters.
@@ -561,9 +554,11 @@ err = tx.blockIdxBucket.Put(blockData.hash[:], blockRow)
 
 这章先不管ffldb具体逻辑，知道大致结构就行了。
 
-#### 1.2.3.2. 加载chainState
+#### 1.2.3.2. 加载链状态
 
-> **code_load_the_chain_state**
+>**code_load_the_chain_state**
+
+下面的代码主要是加载必要的数据到内存中。
 
 ```go
 // Attempt to load the chain state from the database.
@@ -693,6 +688,12 @@ if err != nil {
 }
 
 ```
+
+1. 先从chainStateKeyName中加载BestChainState，这个对象维护了当前主链尾基本状态
+2. 把全部区块头信息加载到内存，生成BlockNode链表，并且维护到index中
+3. 根据state中的hash从index中找到主链尾节点blocknode,并且把这个区块加载出来
+4. 把主链上所有节点的状态设置为statusValid，防止系统关闭前异常导致的状态更新失败影响。
+5. 更新blcokcahin.stateSnapshot
 
 ### 1.2.4. UpgradeDbBuckets
 
@@ -962,7 +963,8 @@ func (m *Manager) Init(chain *blockchain.BlockChain, interrupt <-chan struct{}) 
     return nil
 }
 ```
-为了加速查询，所以系统设计了三个索引服务，但是默认不会都开启。
+
+系统设计了三个索引服务，但是默认不会都开启。
 
 #### 1.2.5.1. transaction index
 
@@ -1143,6 +1145,8 @@ type CfIndex struct {
 
 >**code_segment_6:**
 
+
+
 ```go
 // Initialize rule change threshold state caches.
 if err := b.initThresholdCaches(); err != nil {
@@ -1196,5 +1200,29 @@ func (b *BlockChain) initThresholdCaches() error {
     }
 
     return nil
+}
+
+```
+
+#### 1.2.6.1. isCurrent
+
+判断当前节点是否已经同步最新区块。在主链尾节点调度小于最后一个检查点之前，可以明确知道是没有同步到最新区块的。超过检查点之后，只能根据AdjustedTime时间判断。由于AdjustedTime是根据连接成功的peer中时间生成的调整时间，因此，返回true并不能一定说明节点同步到最新状态，但是也相关不多。
+
+```go
+func (b *BlockChain) isCurrent() bool {
+    // Not current if the latest main (best) chain height is before the
+    // latest known good checkpoint (when checkpoints are enabled).
+    checkpoint := b.LatestCheckpoint()
+    if checkpoint != nil && b.bestChain.Tip().height < checkpoint.Height {
+        return false
+    }
+
+    // Not current if the latest best block has a timestamp before 24 hours
+    // ago.
+    //
+    // The chain appears to be current if none of the checks reported
+    // otherwise.
+    minus24Hours := b.timeSource.AdjustedTime().Add(-24 * time.Hour).Unix()
+    return b.bestChain.Tip().timestamp >= minus24Hours
 }
 ```

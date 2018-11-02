@@ -370,6 +370,7 @@ func (b *BlockChain) initChainState() error {
     return b.index.flushToDB()
 }
 ```
+
 在initChainState中做了如下工作：
 
 >1. 如果initialized=false, 创建chainState
@@ -704,7 +705,7 @@ if err := b.maybeUpgradeDbBuckets(config.Interrupt); err != nil {
 }
 ```
 
-版本更新处理，先不管。看下这个方法的说明：  
+版本更新处理。看下这个方法的说明：  
 
 ```text
 maybeUpgradeDbBuckets checks the database version of the buckets used by this

@@ -229,13 +229,13 @@ if sm.headersFirstMode {
 
 ## 1.2. 内部逻辑
 
-下面会列出一些重要的逻辑，其中一些明显的检查判断之类的会忽略，直接看代码很清楚。
+下面会列出一些重要的逻辑，其中一些明显的检查判断之类的会忽略，直接看代码更清楚。
 
 ### 1.2.1. blockExists
 
 首先要检查这个区块是否已经在主链或者侧链上。
 
-在blockExists这个方法体内，先检查blockIndex, blockIndex会在内存中维护一份索引，因此查询速度快。然后先在检查区块是否在blockIdxBucket中，这个过程是通过调用leveldb接口查询的。
+在blockExists这个方法体内，先检查index, blockchain.index在内存中维护一份索引，因此查询速度快。然后先在检查区块是否在blockIdxBucket中，这个过程是通过调用leveldb接口查询的。
 
 如果查询数据库中查到了数据，但是在最后代码dbFetchHeightByHash中判断block不在主链中MainChain.也是会返回false，因为后面它可能会变成主链中的区块。
 
@@ -649,7 +649,7 @@ func CheckTransactionSanity(tx *btcutil.Tx) error {
 
 ### 1.2.3. findPreviousCheckpoint
 
-这个方法用于从当前节点所有已经保存过的区块中查找到最近的一个在checkpoint点上的区块，checkpoint是在chaincfg中配置的，在前面章节有介绍过。
+这个方法用于从当前节点所有已经保存过的区块中查找到最近的一个在checkpoint点上的区块，checkpoint是在chaincfg中配置的，在前面章节有介绍过。
 
 - nextCheckpoint:是当前节点下一个检查点，而且是没有得到的。
 - checkpointNode:是当前节点已经包含的最近的检查点的区块。
@@ -900,7 +900,7 @@ func (b *BlockChain) addOrphanBlock(block *btcutil.Block) {
 
 ### 1.2.5. maybeAcceptBlock
 
-maybeAcceptBlock也是一个重点方法，用于检查区块是否在bestchain。并且保存区块到数据库
+maybeAcceptBlock也是一个重点方法，用于检查区块是否在bestchain。并且保存区块到数据库
 
 ```go
 // maybeAcceptBlock potentially accepts a block into the block chain and, if

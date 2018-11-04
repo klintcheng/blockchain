@@ -1,10 +1,10 @@
 
-# 1. bitcoin(btcd)技术原理
+# 1. 源码结构
 <!-- TOC -->
 
-- [1. bitcoin(btcd)技术原理](#1-bitcoinbtcd技术原理)
-    - [1.1. 默认启动过程](#11-默认启动过程)
-    - [1.2. 包结构](#12-包结构)
+- [1. 源码结构](#1-%E6%BA%90%E7%A0%81%E7%BB%93%E6%9E%84)
+    - [1.1. 默认启动过程](#11-%E9%BB%98%E8%AE%A4%E5%90%AF%E5%8A%A8%E8%BF%87%E7%A8%8B)
+    - [1.2. 包结构](#12-%E5%8C%85%E7%BB%93%E6%9E%84)
         - [1.2.1. /addrmgr](#121-addrmgr)
         - [1.2.2. /blockchain](#122-blockchain)
         - [1.2.3. /btcec](#123-btcec)
@@ -21,7 +21,7 @@
         - [1.2.14. /rpcclient](#1214-rpcclient)
         - [1.2.15. /txscript](#1215-txscript)
         - [1.2.16. /wire](#1216-wire)
-    - [1.3. 主要代码](#13-主要代码)
+    - [1.3. 主要代码](#13-%E4%B8%BB%E8%A6%81%E4%BB%A3%E7%A0%81)
         - [1.3.1. btcd.go](#131-btcdgo)
         - [1.3.2. config.go](#132-configgo)
         - [1.3.3. server.go](#133-servergo)

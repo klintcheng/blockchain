@@ -16,19 +16,18 @@
         - [1.3.3. generateBlocks](#133-generateblocks)
             - [1.3.3.1. solveBlock](#1331-solveblock)
                 - [1.3.3.1.1. UpdateExtraNonce](#13311-updateextranonce)
-        - [1.3.4. NewBlockTemplate](#134-newblocktemplate)
-            - [1.3.4.1. MiningDescs](#1341-miningdescs)
-            - [1.3.4.2. 填充priorityQueue](#1342-%E5%A1%AB%E5%85%85priorityqueue)
-            - [1.3.4.3. 填充blockTxns](#1343-%E5%A1%AB%E5%85%85blocktxns)
-        - [1.3.5. submitBlock](#135-submitblock)
+            - [1.3.3.2. NewBlockTemplate](#1332-newblocktemplate)
+                - [1.3.3.2.1. MiningDescs](#13321-miningdescs)
+                - [1.3.3.2.2. 填充priorityQueue](#13322-%E5%A1%AB%E5%85%85priorityqueue)
+                - [1.3.3.2.3. 填充blockTxns](#13323-%E5%A1%AB%E5%85%85blocktxns)
+            - [1.3.3.3. submitBlock](#1333-submitblock)
+                - [1.3.3.3.1. handleBlockchainNotification](#13331-handleblockchainnotification)
 
 <!-- /TOC -->
 
 ## 1.1. 简介
 
 作为分布式系统最重要的一环，挖矿就是一个竞争成为提案者(proposer)的过程。在中心化系统中常用的paxos和raft等算法无法解决节点不可信问题。bitcoin采用POW工作量证明机制来证明区块是否合法。当一个挖矿节点生成一个新节点，并广播出去，当另一个挖矿节点收到这个区块并验证通过之后，会停止之前的挖矿计算，也就是之前的工作无效。开始下一轮竞争生成新的区块。
-
-挖矿逻辑就是先要从内存池选择一定量的交易，然后不停的修改区块头中的nonce值，使生成的区块hash小于难度值。
 
 ```go
 // server.go中启用miner的代码：
@@ -1047,7 +1046,7 @@ func standardCoinbaseScript(nextBlockHeight int32, extraNonce uint64) ([]byte, e
 }
 ```
 
-### 1.3.4. NewBlockTemplate
+#### 1.3.3.2. NewBlockTemplate
 
 ```go
 
@@ -1296,7 +1295,7 @@ func (g *BlkTmplGenerator) NewBlockTemplate(payToAddress btcutil.Address) (*Bloc
 8. 创建Block
 9. 创建BlockTemplate
 
-#### 1.3.4.1. MiningDescs
+##### 1.3.3.2.1. MiningDescs
 
 g.txSource.MiningDescs()中的txSource就是交易内存池
 
@@ -1320,7 +1319,7 @@ func (mp *TxPool) MiningDescs() []*mining.TxDesc {
 }
 ```
 
-#### 1.3.4.2. 填充priorityQueue
+##### 1.3.3.2.2. 填充priorityQueue
 
 ```go
 for _, txDesc := range sourceTxns {
@@ -1410,7 +1409,7 @@ for _, txDesc := range sourceTxns {
 }
 ```
 
-#### 1.3.4.3. 填充blockTxns
+##### 1.3.3.2.3. 填充blockTxns
 
 ```go
 // Choose which transactions make it into the block.
@@ -1591,7 +1590,7 @@ for priorityQueue.Len() > 0 {
 
 基本上大多数验证方法在前面看过。
 
-### 1.3.5. submitBlock
+#### 1.3.3.3. submitBlock
 
 提交区块，可以看到它调用的还是ProcessBlock，而在ProcessBlock处理之后，会发送通知把这个区块传播出去。
 
@@ -1641,3 +1640,48 @@ func (m *CPUMiner) submitBlock(block *btcutil.Block) bool {
     return true
 }
 ```
+
+##### 1.3.3.3.1. handleBlockchainNotification
+
+在ProcessBlock处理中，如果区块链接到主链，会发送NTBlockConnected通知。而这个通知会在SyncManager中处理。
+
+```go
+case blockchain.NTBlockConnected:
+    block, ok := notification.Data.(*btcutil.Block)
+    if !ok {
+        log.Warnf("Chain connected notification is not a block.")
+        break
+    }
+
+    // Remove all of the transactions (except the coinbase) in the
+    // connected block from the transaction pool.  Secondly, remove any
+    // transactions which are now double spends as a result of these
+    // new transactions.  Finally, remove any transaction that is
+    // no longer an orphan. Transactions which depend on a confirmed
+    // transaction are NOT removed recursively because they are still
+    // valid.
+    for _, tx := range block.Transactions()[1:] {
+        sm.txMemPool.RemoveTransaction(tx, false)
+        sm.txMemPool.RemoveDoubleSpends(tx)
+        sm.txMemPool.RemoveOrphan(tx)
+        sm.peerNotifier.TransactionConfirmed(tx)
+        acceptedTxs := sm.txMemPool.ProcessOrphans(tx)
+        sm.peerNotifier.AnnounceNewTransactions(acceptedTxs)
+    }
+
+    // Register block with the fee estimator, if it exists.
+    if sm.feeEstimator != nil {
+        err := sm.feeEstimator.RegisterBlock(block)
+
+        // If an error is somehow generated then the fee estimator
+        // has entered an invalid state. Since it doesn't know how
+        // to recover, create a new one.
+        if err != nil {
+            sm.feeEstimator = mempool.NewFeeEstimator(
+                mempool.DefaultEstimateFeeMaxRollback,
+                mempool.DefaultEstimateFeeMinRegisteredBlocks)
+        }
+    }
+```
+
+可以看到，在挖矿完成调用ProcessBlock之前，是没有删除内存池中的交易的。因此，在这里会把交易从内存池中删除。同时把不再是孤儿的交易通过AnnounceNewTransactions通知发送出去。
